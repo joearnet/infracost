@@ -33,7 +33,7 @@ if [ ! -z "$BITBUCKET_BUILD_NUMBER" ]; then
 fi
 
 post_bitbucket_comment () {
-  # Bitbucket comments require a different JSON format and don't support HTML 
+  # Bitbucket comments require a different JSON format and don't support HTML
   jq -Mnc --arg change_word $change_word \
           --arg absolute_percent_diff $(printf '%.1f\n' $absolute_percent_diff) \
           --arg default_branch_monthly_cost $default_branch_monthly_cost \
@@ -91,7 +91,8 @@ if [ ! -z "$BITBUCKET_PIPELINES" ]; then
 fi
 echo "Switching to default branch"
 git fetch --depth=1 origin master &>/dev/null || git fetch --depth=1 origin main &>/dev/null || echo "Could not fetch default branch from origin, no problems, switching to it..."
-git switch master &>/dev/null || git switch main &>/dev/null || (echo "Error: could not switch to branch master or main" && exit 1)
+git branch -a
+git switch master || git switch main || (echo "Error: could not switch to branch master or main" && exit 1)
 git log -n1
 
 echo "Running infracost on default branch using:"
@@ -127,7 +128,7 @@ if [ $(echo "$absolute_percent_diff > $percentage_threshold" | bc -l) = 1 ]; the
   if [ ! -z "$GITHUB_ACTIONS" ]; then
     if [ "$GITHUB_EVENT_NAME" == "pull_request" ]; then
       GITHUB_SHA=$(cat $GITHUB_EVENT_PATH | jq -r .pull_request.head.sha)
-    fi  
+    fi
     echo "Posting comment to GitHub commit $GITHUB_SHA"
     cat diff_infracost.txt | curl -L -X POST -d @- \
         -H "Content-Type: application/json" \
