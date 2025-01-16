@@ -2,11 +2,16 @@ package output
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/dustin/go-humanize"
 	"github.com/fatih/color"
-	"github.com/infracost/infracost/internal/ui"
+	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/shopspring/decimal"
+
+	"github.com/infracost/infracost/internal/logging"
+	"github.com/infracost/infracost/internal/ui"
 )
 
 const (
@@ -18,33 +23,34 @@ const (
 func ToDiff(out Root, opts Options) ([]byte, error) {
 	s := ""
 
-	hasNilCosts := false
-	hasEmptyDiff := true
+	noDiffProjects := make([]string, 0)
+	erroredProjects := make(Projects, 0)
 
-	for i, project := range out.Projects {
+	s += "──────────────────────────────────\n"
+	for _, project := range out.Projects {
+		if project.Metadata.HasErrors() && !project.Metadata.IsEmptyProjectError() {
+			erroredProjects = append(erroredProjects, project)
+			continue
+		}
+
 		if project.Diff == nil {
 			continue
 		}
 
-		if i != 0 {
-			s += "----------------------------------\n"
+		// Check whether there is any diff or not
+		if len(project.Diff.Resources) == 0 {
+			noDiffProjects = append(noDiffProjects, project.LabelWithMetadata())
+			continue
 		}
 
-		s += fmt.Sprintf("%s %s\n\n",
-			ui.BoldString("Project:"),
-			project.Label(opts.DashboardEnabled),
-		)
+		s += projectTitle(project)
+		s += "\n"
+
+		sortResources(project.Diff.Resources, "")
 
 		for _, diffResource := range project.Diff.Resources {
-			hasEmptyDiff = false
-
 			oldResource := findResourceByName(project.PastBreakdown.Resources, diffResource.Name)
 			newResource := findResourceByName(project.Breakdown.Resources, diffResource.Name)
-
-			if (newResource == nil || resourceHasNilCosts(*newResource)) &&
-				(oldResource == nil || resourceHasNilCosts(*oldResource)) {
-				hasNilCosts = true
-			}
 
 			s += resourceToDiff(out.Currency, diffResource, oldResource, newResource, true)
 			s += "\n"
@@ -62,9 +68,9 @@ func ToDiff(out Root, opts Options) ([]byte, error) {
 
 		s += fmt.Sprintf("%s %s\nAmount:  %s %s",
 			ui.BoldString("Monthly cost change for"),
-			ui.BoldString(project.Label(opts.DashboardEnabled)),
+			ui.BoldString(project.LabelWithMetadata()),
 			formatTitleWithCurrency(formatCostChange(out.Currency, project.Diff.TotalMonthlyCost), out.Currency),
-			ui.FaintStringf("(%s -> %s)", formatCost(out.Currency, oldCost), formatCost(out.Currency, newCost)),
+			ui.FaintStringf("(%s → %s)", formatCost(out.Currency, oldCost), formatCost(out.Currency, newCost)),
 		)
 
 		percent := formatPercentChange(oldCost, newCost)
@@ -74,35 +80,126 @@ func ToDiff(out Root, opts Options) ([]byte, error) {
 			)
 		}
 
-		if i != len(out.Projects)-1 {
-			s += "\n\n"
+		s += "\n\n"
+		s += "──────────────────────────────────\n"
+	}
+
+	if len(erroredProjects) > 0 {
+		for _, project := range erroredProjects {
+			s += projectTitle(project)
+			s += erroredProject(project)
+
+			s += "\n──────────────────────────────────\n"
 		}
 	}
 
-	s += "\n\n----------------------------------\n"
-	s += fmt.Sprintf("Key: %s changed, %s added, %s removed",
-		opChar(UPDATED),
-		opChar(ADDED),
-		opChar(REMOVED),
-	)
+	hasDiffProjects := len(noDiffProjects)+len(erroredProjects) != len(out.Projects)
 
-	if hasNilCosts {
-		s += fmt.Sprintf("\n\nTo estimate usage-based resources use --usage-file, see %s",
-			ui.LinkString("https://infracost.io/usage-file"),
+	if hasDiffProjects {
+		keyStr := fmt.Sprintf("Key: * usage cost, %s changed, %s added, %s removed",
+			opChar(UPDATED),
+			opChar(ADDED),
+			opChar(REMOVED),
 		)
+		s = keyStr + "\n\n" + s + keyStr + "\n"
 	}
 
-	if hasEmptyDiff {
-		s += fmt.Sprintf("\n\nNo changes detected. Run %s to see the full breakdown.",
-			ui.PrimaryString("infracost breakdown"))
+	if len(noDiffProjects) > 0 && opts.ShowSkipped {
+		if !hasDiffProjects && len(erroredProjects) > 0 {
+			s += "──────────────────────────────────\n"
+		}
+
+		if len(noDiffProjects) == 1 {
+			s += "1 project has no cost estimate change.\n"
+			s += fmt.Sprintf("Run the following command to see its breakdown: %s", ui.PrimaryString("infracost breakdown --path=/path/to/code"))
+		} else {
+			s += fmt.Sprintf("%d projects have no cost estimate changes.\n", len(noDiffProjects))
+			s += fmt.Sprintf("Run the following command to see their breakdown: %s", ui.PrimaryString("infracost breakdown --path=/path/to/code"))
+		}
+
+		s += "\n\n"
+		s += "──────────────────────────────────"
 	}
 
-	unsupportedMsg := out.unsupportedResourcesMessage(opts.ShowSkipped)
+	if hasDiffProjects {
+		s += "\n"
+		s += usageCostsMessage(out, false)
+		s += "\n"
+	}
+
+	unsupportedMsg := out.summaryMessage(opts.ShowSkipped)
 	if unsupportedMsg != "" {
-		s += "\n\n" + unsupportedMsg
+		s += "\n"
+		s += unsupportedMsg
+	}
+
+	if hasDiffProjects && out.DiffTotalMonthlyCost != nil && out.DiffTotalMonthlyCost.Abs().GreaterThan(decimal.Zero) {
+		s += "\n\n"
+		s += fmt.Sprintf("Infracost estimate: %s\n", formatCostChangeSentence(out.Currency, out.PastTotalMonthlyCost, out.TotalMonthlyCost, false))
+		s += tableForDiff(out, opts)
 	}
 
 	return []byte(s), nil
+}
+
+func projectTitle(project Project) string {
+	s := fmt.Sprintf("%s %s\n",
+		ui.BoldString("Project:"),
+		project.Label(),
+	)
+
+	if project.Metadata.TerraformModulePath != "" {
+		s += fmt.Sprintf("%s %s\n",
+			ui.BoldString("Module path:"),
+			project.Metadata.TerraformModulePath,
+		)
+	}
+
+	if project.Metadata.WorkspaceLabel() != "" {
+		s += fmt.Sprintf("%s %s\n",
+			ui.BoldString("Workspace:"),
+			project.Metadata.WorkspaceLabel(),
+		)
+	}
+
+	return s
+}
+
+func tableForDiff(out Root, opts Options) string {
+	t := table.NewWriter()
+	t.SetStyle(table.StyleBold)
+	t.Style().Format.Header = text.FormatDefault
+	t.AppendHeader(table.Row{
+		"Changed project",
+		"Baseline cost",
+		"Usage cost*",
+		"Total change",
+	})
+
+	t.SetColumnConfigs([]table.ColumnConfig{
+		{Name: "Changed project", WidthMin: 50},
+		{Name: "Baseline cost", WidthMin: 10, Align: text.AlignRight},
+		{Name: "Usage cost*", WidthMin: 10, Align: text.AlignRight},
+		{Name: "Total change", WidthMin: 10, Align: text.AlignRight},
+	})
+
+	for _, project := range out.Projects {
+		if !showProject(project, opts, false) {
+			continue
+		}
+
+		t.AppendRow(
+			table.Row{
+				truncateMiddle(project.Name, 64, "..."),
+				formatMarkdownCostChange(out.Currency, project.PastBreakdown.TotalMonthlyBaselineCost(), project.Breakdown.TotalMonthlyBaselineCost(), false, true, false),
+				formatMarkdownCostChange(out.Currency, project.PastBreakdown.TotalMonthlyUsageCost, project.Breakdown.TotalMonthlyUsageCost, false, true, !usageCostsEnabled(out)),
+				formatMarkdownCostChange(out.Currency, project.PastBreakdown.TotalMonthlyCost, project.Breakdown.TotalMonthlyCost, false, false, false),
+			},
+		)
+
+	}
+
+	return t.Render()
 }
 
 func resourceToDiff(currency string, diffResource Resource, oldResource *Resource, newResource *Resource, isTopLevel bool) string {
@@ -147,11 +244,15 @@ func resourceToDiff(currency string, diffResource Resource, oldResource *Resourc
 		var oldComponent, newComponent *CostComponent
 
 		if oldResource != nil {
-			oldComponent = findCostComponentByName(oldResource.CostComponents, diffComponent.Name)
+			oldComponent = findMatchingCostComponent(oldResource.CostComponents, diffComponent.Name)
 		}
 
 		if newResource != nil {
-			newComponent = findCostComponentByName(newResource.CostComponents, diffComponent.Name)
+			newComponent = findMatchingCostComponent(newResource.CostComponents, diffComponent.Name)
+		}
+
+		if zeroDiffComponent(diffComponent, oldComponent, newComponent, diffComponent.Name) {
+			continue
 		}
 
 		s += "\n"
@@ -169,11 +270,73 @@ func resourceToDiff(currency string, diffResource Resource, oldResource *Resourc
 			newSubResource = findResourceByName(newResource.SubResources, diffSubResource.Name)
 		}
 
+		if zeroDiffResource(diffSubResource, oldSubResource, newSubResource, diffResource.Name) {
+			continue
+		}
+
 		s += "\n"
 		s += ui.Indent(resourceToDiff(currency, diffSubResource, oldSubResource, newSubResource, false), "    ")
 	}
 
 	return s
+}
+
+func zeroDiffComponent(diff CostComponent, old, new *CostComponent, resourceName string) bool {
+	if diff.MonthlyQuantity == nil || !diff.MonthlyQuantity.IsZero() {
+		return false
+	}
+	if old != nil && (old.MonthlyQuantity == nil || !old.MonthlyQuantity.IsZero()) {
+		return false
+	}
+	if new != nil && (new.MonthlyQuantity == nil || !new.MonthlyQuantity.IsZero()) {
+		return false
+	}
+
+	logging.Logger.Debug().Msgf("Hiding diff with zero usage: %s '%s'", resourceName, diff.Name)
+	return true
+}
+
+func zeroDiffResource(diff Resource, old, new *Resource, resourceName string) bool {
+	for _, cc := range diff.CostComponents {
+		if cc.MonthlyQuantity == nil || !cc.MonthlyQuantity.IsZero() {
+			return false
+		}
+	}
+
+	if old != nil {
+		for _, cc := range old.CostComponents {
+			if cc.MonthlyQuantity == nil || !cc.MonthlyQuantity.IsZero() {
+				return false
+			}
+		}
+	}
+
+	if new != nil {
+		for _, cc := range new.CostComponents {
+			if cc.MonthlyQuantity == nil || !cc.MonthlyQuantity.IsZero() {
+				return false
+			}
+		}
+	}
+
+	for _, diffSubResource := range diff.SubResources {
+		var oldSubResource, newSubResource *Resource
+
+		if old != nil {
+			oldSubResource = findResourceByName(old.SubResources, diffSubResource.Name)
+		}
+
+		if new != nil {
+			newSubResource = findResourceByName(new.SubResources, diffSubResource.Name)
+		}
+
+		if !zeroDiffResource(diffSubResource, oldSubResource, newSubResource, diffSubResource.Name) {
+			return false
+		}
+	}
+
+	logging.Logger.Debug().Msgf("Hiding resource with no usage: %s.%s", resourceName, diff.Name)
+	return true
 }
 
 func costComponentToDiff(currency string, diffComponent CostComponent, oldComponent *CostComponent, newComponent *CostComponent) string {
@@ -186,19 +349,21 @@ func costComponentToDiff(currency string, diffComponent CostComponent, oldCompon
 		op = REMOVED
 	}
 
-	var oldCost, newCost, oldPrice, newPrice *decimal.Decimal
+	var oldCost, newCost, oldPrice, newPrice, oldQuantity, newQuantity *decimal.Decimal
 
 	if oldComponent != nil {
 		oldCost = oldComponent.MonthlyCost
 		oldPrice = &oldComponent.Price
+		oldQuantity = oldComponent.MonthlyQuantity
 	}
 
 	if newComponent != nil {
 		newCost = newComponent.MonthlyCost
 		newPrice = &newComponent.Price
+		newQuantity = newComponent.MonthlyQuantity
 	}
 
-	s += fmt.Sprintf("%s %s\n", opChar(op), diffComponent.Name)
+	s += fmt.Sprintf("%s %s\n", opChar(op), colorizeDiffName(diffComponent.Name))
 
 	if oldCost == nil && newCost == nil {
 		s += "  Monthly cost depends on usage\n"
@@ -208,13 +373,27 @@ func costComponentToDiff(currency string, diffComponent CostComponent, oldCompon
 			formatPriceChangeDetails(currency, oldPrice, newPrice),
 		)
 	} else {
-		s += fmt.Sprintf("  %s%s\n",
+		usageQuantity := ""
+		if diffComponent.UsageBased && diffComponent.MonthlyQuantity != nil {
+			usageQuantity = fmt.Sprintf(", %s%s*",
+				formatQuantityChange(diffComponent.MonthlyQuantity, diffComponent.Unit),
+				ui.FaintString(formatQuantityChangeDetails(oldQuantity, newQuantity)),
+			)
+		}
+
+		s += fmt.Sprintf("  %s%s%s\n",
 			formatCostChange(currency, diffComponent.MonthlyCost),
 			ui.FaintString(formatCostChangeDetails(currency, oldCost, newCost)),
+			usageQuantity,
 		)
 	}
 
 	return s
+}
+
+// colorizeDiffName colorizes any arrows in the name
+func colorizeDiffName(name string) string {
+	return strings.ReplaceAll(name, " → ", fmt.Sprintf(" %s ", color.YellowString("→")))
 }
 
 func opChar(op int) string {
@@ -238,14 +417,41 @@ func findResourceByName(resources []Resource, name string) *Resource {
 	return nil
 }
 
-func findCostComponentByName(costComponents []CostComponent, name string) *CostComponent {
-	for _, c := range costComponents {
-		if c.Name == name {
-			return &c
+// findMatchingCostComponent finds a matching cost component by first looking for an exact match by name
+// and if that's not found, looking for a match of everything before any brackets.
+func findMatchingCostComponent(costComponents []CostComponent, name string) *CostComponent {
+	for _, costComponent := range costComponents {
+		if costComponent.Name == name {
+			return &costComponent
+		}
+	}
+
+	for _, costComponent := range costComponents {
+		splitKey := strings.Split(name, " (")
+		splitName := strings.Split(costComponent.Name, " (")
+		if len(splitKey) > 1 && len(splitName) > 1 && splitName[0] == splitKey[0] {
+			return &costComponent
 		}
 	}
 
 	return nil
+}
+
+func formatQuantityChange(d *decimal.Decimal, unit string) string {
+	if d == nil {
+		return ""
+	}
+
+	abs := d.Abs()
+	return fmt.Sprintf("%s%s %s", getSym(*d), formatQuantity(&abs), unit)
+}
+
+func formatQuantityChangeDetails(old *decimal.Decimal, new *decimal.Decimal) string {
+	if old == nil || new == nil {
+		return ""
+	}
+
+	return fmt.Sprintf(" (%s → %s)", formatQuantity(old), formatQuantity(new))
 }
 
 func formatCostChange(currency string, d *decimal.Decimal) string {
@@ -262,7 +468,7 @@ func formatCostChangeDetails(currency string, oldCost *decimal.Decimal, newCost 
 		return ""
 	}
 
-	return fmt.Sprintf(" (%s -> %s)", formatCost(currency, oldCost), formatCost(currency, newCost))
+	return fmt.Sprintf(" (%s → %s)", formatCost(currency, oldCost), formatCost(currency, newCost))
 }
 
 func formatPriceChange(currency string, d decimal.Decimal) string {
@@ -275,7 +481,7 @@ func formatPriceChangeDetails(currency string, oldPrice *decimal.Decimal, newPri
 		return ""
 	}
 
-	return fmt.Sprintf(" (%s -> %s)", formatPrice(currency, *oldPrice), formatPrice(currency, *newPrice))
+	return fmt.Sprintf(" (%s → %s)", formatPrice(currency, *oldPrice), formatPrice(currency, *newPrice))
 }
 
 func formatPercentChange(oldCost *decimal.Decimal, newCost *decimal.Decimal) string {

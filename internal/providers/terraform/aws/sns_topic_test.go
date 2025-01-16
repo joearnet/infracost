@@ -6,11 +6,11 @@ import (
 	"github.com/infracost/infracost/internal/providers/terraform/tftest"
 )
 
-func TestSQSTopicGoldenFile(t *testing.T) {
-	t.Parallel()
+func TestSNSTopicGoldenFile(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping test in short mode")
 	}
-
-	tftest.GoldenFileResourceTests(t, "sns_topic_test")
+	opts := tftest.DefaultGoldenFileOptions()
+	opts.CaptureLogs = true
+	tftest.GoldenFileResourceTestsWithOpts(t, "sns_topic_test", opts)
 }

@@ -1,0 +1,125 @@
+
+
+#### 💰 Infracost report ####
+
+#### Monthly estimate decreased by $3,364 ↓ ####
+
+| **Changed project** | **Module path** | **Baseline cost** | **Usage cost*** | **Total change** | **New monthly cost** |
+| ----------- | ---------- | --------------: | --------------: | --------------: | --------------: |
+| my first project |  | -$561 | - | -$561 (-43%) | $743 |
+| my first project again |  | -$561 | - | -$561 (-43%) | $743 |
+| my terragrunt multi project | prod | -$561 | - | -$561 (-43%) | $748 |
+| my terragrunt prod project |  | -$561 | - | -$561 (-43%) | $748 |
+| my terragrunt workspace | prod | -$561 | - | -$561 (-43%) | $748 |
+| my workspace project |  | -$561 | - | -$561 (-43%) | $743 |
+
+*Usage costs can be estimated by updating [Infracost Cloud settings](https://www.infracost.io/docs/features/usage_based_resources), see [docs](https://www.infracost.io/docs/features/usage_based_resources/#infracost-usageyml) for other options.
+
+##### Estimate details  #####
+
+```
+Key: * usage cost, ~ changed, + added, - removed
+
+──────────────────────────────────
+Project: my first project
+
+~ aws_instance.web_app
+  -$561 ($1,303 → $743)
+
+    ~ Instance usage (Linux/UNIX, on-demand, m5.8xlarge → m5.4xlarge)
+      -$561 ($1,121 → $561)
+
+Monthly cost change for my first project
+Amount:  -$561 ($1,303 → $743)
+Percent: -43%
+
+──────────────────────────────────
+Project: my first project again
+
+~ aws_instance.web_app
+  -$561 ($1,303 → $743)
+
+    ~ Instance usage (Linux/UNIX, on-demand, m5.8xlarge → m5.4xlarge)
+      -$561 ($1,121 → $561)
+
+Monthly cost change for my first project again
+Amount:  -$561 ($1,303 → $743)
+Percent: -43%
+
+──────────────────────────────────
+Project: my terragrunt multi project
+Module path: prod
+
+~ aws_instance.web_app
+  -$561 ($1,308 → $748)
+
+    ~ Instance usage (Linux/UNIX, on-demand, m5.8xlarge → m5.4xlarge)
+      -$561 ($1,121 → $561)
+
+Monthly cost change for my terragrunt multi project (Module path: prod)
+Amount:  -$561 ($1,308 → $748)
+Percent: -43%
+
+──────────────────────────────────
+Project: my terragrunt prod project
+
+~ aws_instance.web_app
+  -$561 ($1,308 → $748)
+
+    ~ Instance usage (Linux/UNIX, on-demand, m5.8xlarge → m5.4xlarge)
+      -$561 ($1,121 → $561)
+
+Monthly cost change for my terragrunt prod project
+Amount:  -$561 ($1,308 → $748)
+Percent: -43%
+
+──────────────────────────────────
+Project: my terragrunt workspace
+Module path: prod
+Workspace: ws2
+
+~ aws_instance.web_app
+  -$561 ($1,308 → $748)
+
+    ~ Instance usage (Linux/UNIX, on-demand, m5.8xlarge → m5.4xlarge)
+      -$561 ($1,121 → $561)
+
+Monthly cost change for my terragrunt workspace (Module path: prod, Workspace: ws2)
+Amount:  -$561 ($1,308 → $748)
+Percent: -43%
+
+──────────────────────────────────
+Project: my workspace project
+Workspace: ws1
+
+~ aws_instance.web_app
+  -$561 ($1,303 → $743)
+
+    ~ Instance usage (Linux/UNIX, on-demand, m5.8xlarge → m5.4xlarge)
+      -$561 ($1,121 → $561)
+
+Monthly cost change for my workspace project (Workspace: ws1)
+Amount:  -$561 ($1,303 → $743)
+Percent: -43%
+
+──────────────────────────────────
+Key: * usage cost, ~ changed, + added, - removed
+
+*Usage costs can be estimated by updating Infracost Cloud settings, see docs for other options.
+
+18 cloud resources were detected:
+∙ 18 were estimated
+
+Infracost estimate: Monthly estimate decreased by $3,364 ↓
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┓
+┃ Changed project                                    ┃ Baseline cost ┃ Usage cost* ┃ Total change ┃
+┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╋━━━━━━━━━━━━━━━╋━━━━━━━━━━━━━╋━━━━━━━━━━━━━━┫
+┃ my first project                                   ┃         -$561 ┃           - ┃ -$561 (-43%) ┃
+┃ my first project again                             ┃         -$561 ┃           - ┃ -$561 (-43%) ┃
+┃ my terragrunt multi project                        ┃         -$561 ┃           - ┃ -$561 (-43%) ┃
+┃ my terragrunt prod project                         ┃         -$561 ┃           - ┃ -$561 (-43%) ┃
+┃ my terragrunt workspace                            ┃         -$561 ┃           - ┃ -$561 (-43%) ┃
+┃ my workspace project                               ┃         -$561 ┃           - ┃ -$561 (-43%) ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┻━━━━━━━━━━━━━━━┻━━━━━━━━━━━━━┻━━━━━━━━━━━━━━┛
+```
+

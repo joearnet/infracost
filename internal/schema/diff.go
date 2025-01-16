@@ -2,13 +2,19 @@ package schema
 
 import (
 	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/shopspring/decimal"
-	log "github.com/sirupsen/logrus"
+
+	"github.com/infracost/infracost/internal/logging"
 )
 
+// nameBracketReg matches the part of a cost component name before the brackets, and the part in the brackets
+var nameBracketReg = regexp.MustCompile(`(.*?)\s*\((.*?)\)`)
+
 // CalculateDiff calculates the diff of past and current resources
-func calculateDiff(past []*Resource, current []*Resource) []*Resource {
+func CalculateDiff(past []*Resource, current []*Resource) []*Resource {
 	// There are many ways to calculate a diff between two sets of
 	// nested objects. The method used here is to create a nested
 	// hashmap of each set of states for fast lookup so the structure
@@ -59,7 +65,7 @@ func diffResourcesByKey(resourceKey string, pastResMap, currentResMap map[string
 	past, pastOk := pastResMap[resourceKey]
 	current, currentOk := currentResMap[resourceKey]
 	if current == nil && past == nil {
-		log.Debugf("diffResourcesByKey nil current and past with key %s", resourceKey)
+		logging.Logger.Debug().Msgf("diffResourcesByKey nil current and past with key %s", resourceKey)
 		return false, nil
 	}
 	baseResource := current
@@ -78,9 +84,11 @@ func diffResourcesByKey(resourceKey string, pastResMap, currentResMap map[string
 		SkipMessage:  baseResource.SkipMessage,
 		ResourceType: baseResource.ResourceType,
 		Tags:         baseResource.Tags,
+		DefaultTags:  baseResource.DefaultTags,
 
-		HourlyCost:  diffDecimals(current.HourlyCost, past.HourlyCost),
-		MonthlyCost: diffDecimals(current.MonthlyCost, past.MonthlyCost),
+		HourlyCost:       diffDecimals(current.HourlyCost, past.HourlyCost),
+		MonthlyCost:      diffDecimals(current.MonthlyCost, past.MonthlyCost),
+		MonthlyUsageCost: diffDecimals(current.MonthlyUsageCost, past.MonthlyUsageCost),
 	}
 	for _, subResource := range past.SubResources {
 		subKey := fmt.Sprintf("%v.%v", resourceKey, subResource.Name)
@@ -117,25 +125,39 @@ func diffResourcesByKey(resourceKey string, pastResMap, currentResMap map[string
 }
 
 // diffCostComponentsByResource calculates the diff of cost components of two resource.
-// It uses the same strategy as the calculating the diff of resources in the CalculateDiff func.
-func diffCostComponentsByResource(past, current *Resource) (bool, []*CostComponent) {
+func diffCostComponentsByResource(pastResource, currentResource *Resource) (bool, []*CostComponent) {
 	result := make([]*CostComponent, 0)
 	changed := false
-	pastCCMap := getCostComponentsMap(past)
-	currentCCMap := getCostComponentsMap(current)
-	for _, costComponent := range past.CostComponents {
-		key := costComponent.Name
-		changed, diff := diffCostComponentsByKey(key, pastCCMap, currentCCMap)
+
+	remainingCostComponents := map[string]*CostComponent{}
+	for _, costComponent := range currentResource.CostComponents {
+		remainingCostComponents[costComponent.Name] = costComponent
+	}
+
+	for _, pastCostComponent := range pastResource.CostComponents {
+		var currentCostComponent *CostComponent
+		if currentResource != nil {
+			currentCostComponent = findMatchingCostComponent(currentResource.CostComponents, pastCostComponent.Name)
+		}
+		if currentCostComponent != nil {
+			delete(remainingCostComponents, currentCostComponent.Name)
+		}
+
+		changed, diff := diffCostComponents(pastCostComponent, currentCostComponent)
 		if changed {
 			result = append(result, diff)
 		}
 	}
-	for _, costComponent := range current.CostComponents {
-		key := costComponent.Name
-		if _, ok := currentCCMap[key]; !ok {
+
+	// Loop through all the current ones so we maintain the order
+	for _, currentCostComponent := range currentResource.CostComponents {
+		// Skip any that have already been processed
+		if _, ok := remainingCostComponents[currentCostComponent.Name]; !ok {
 			continue
 		}
-		changed, diff := diffCostComponentsByKey(key, pastCCMap, currentCCMap)
+
+		// Since we've skipped the processed ones then there will be no past cost component to diff against
+		changed, diff := diffCostComponents(nil, currentCostComponent)
 		if changed {
 			result = append(result, diff)
 		}
@@ -146,32 +168,28 @@ func diffCostComponentsByResource(past, current *Resource) (bool, []*CostCompone
 	return changed, result
 }
 
-// diffCostComponentsByKey calculates the diff between two cost components given
-// their costComponentsMap and their key.
-func diffCostComponentsByKey(key string, pastCCMap, currentCCMap map[string]*CostComponent) (bool, *CostComponent) {
-	past, pastOk := pastCCMap[key]
-	current, currentOk := currentCCMap[key]
-	if current == nil && past == nil {
-		log.Debugf("diffCostComponentsByKey nil current and past with key %s", key)
-		return false, nil
-	}
+// diffCostComponents creates a new cost component which contains the diff of the two cost components
+func diffCostComponents(past *CostComponent, current *CostComponent) (bool, *CostComponent) {
 	baseCostComponent := current
 	if current == nil {
 		baseCostComponent = past
 		current = &CostComponent{}
 	}
+
 	if past == nil {
 		past = &CostComponent{}
 	}
+
 	changed := false
 	diff := &CostComponent{
-		Name:                 baseCostComponent.Name,
+		Name:                 diffName(current.Name, past.Name),
 		Unit:                 baseCostComponent.Unit,
 		UnitMultiplier:       baseCostComponent.UnitMultiplier,
 		IgnoreIfMissingPrice: baseCostComponent.IgnoreIfMissingPrice,
 		ProductFilter:        baseCostComponent.ProductFilter,
 		PriceFilter:          baseCostComponent.PriceFilter,
 		priceHash:            baseCostComponent.priceHash,
+		UsageBased:           baseCostComponent.UsageBased,
 
 		HourlyQuantity:      diffDecimals(current.HourlyQuantity, past.HourlyQuantity),
 		MonthlyQuantity:     diffDecimals(current.MonthlyQuantity, past.MonthlyQuantity),
@@ -185,14 +203,28 @@ func diffCostComponentsByKey(key string, pastCCMap, currentCCMap map[string]*Cos
 		!diff.HourlyCost.IsZero() || !diff.MonthlyCost.IsZero() {
 		changed = true
 	}
-	if pastOk {
-		delete(pastCCMap, key)
-	}
-	if currentOk {
-		delete(currentCCMap, key)
-	}
 
 	return changed, diff
+}
+
+// findMatchingCostComponent finds a matching cost component by first looking for an exact match by name
+// and if that's not found, looking for a match of everything before any brackets.
+func findMatchingCostComponent(costComponents []*CostComponent, name string) *CostComponent {
+	for _, costComponent := range costComponents {
+		if costComponent.Name == name {
+			return costComponent
+		}
+	}
+
+	for _, costComponent := range costComponents {
+		splitKey := strings.Split(name, " (")
+		splitName := strings.Split(costComponent.Name, " (")
+		if len(splitKey) > 1 && len(splitName) > 1 && splitName[0] == splitKey[0] {
+			return costComponent
+		}
+	}
+
+	return nil
 }
 
 // diffDecimals calculates the diff between two decimals.
@@ -213,6 +245,56 @@ func diffDecimals(current *decimal.Decimal, past *decimal.Decimal) *decimal.Deci
 	return &diff
 }
 
+// diffName creates a new cost component name for the diff cost component based on the existing cost components.
+// Anything that is in brackets is treated as a label and any difference in the labels across the past and current
+// are represented as "old → new"
+//
+// For example:
+// If past is "Instance usage (Linux/UNIX, on-demand, t3.small)"
+// and current is "Instance usage (Linux/UNIX, on-demand, t3.medium)"
+// this returns "Instance usage (Linux/UNIX, on-demand, t3.small → t3.medium)"
+func diffName(current string, past string) string {
+	if current == "" {
+		return past
+	}
+
+	if past == "" {
+		return current
+	}
+
+	currentM := nameBracketReg.FindStringSubmatch(current)
+	pastM := nameBracketReg.FindStringSubmatch(past)
+
+	if len(currentM) < 3 || len(pastM) < 3 {
+		return current
+	}
+
+	pastLabels := strings.Split(pastM[2], ", ")
+	currentLabels := strings.Split(currentM[2], ", ")
+
+	// If the names don't have the same label count then return the labels in the format `(old, labels) → (new, labels)`
+	if len(pastLabels) != len(currentLabels) {
+		return fmt.Sprintf("%s (%s) → (%s)", currentM[1], pastM[2], currentM[2])
+	}
+
+	labelCount := len(currentLabels)
+	labels := make([]string, 0, labelCount)
+
+	for i := 0; i < labelCount; i++ {
+		if i > len(pastLabels)-1 {
+			labels = append(labels, currentLabels[i])
+		} else if i > len(currentLabels)-1 {
+			labels = append(labels, pastLabels[i])
+		} else if pastLabels[i] == currentLabels[i] {
+			labels = append(labels, currentLabels[i])
+		} else {
+			labels = append(labels, fmt.Sprintf("%s → %s", pastLabels[i], currentLabels[i]))
+		}
+	}
+
+	return fmt.Sprintf("%s (%s)", currentM[1], strings.Join(labels, ", "))
+}
+
 // fillResourcesMap fills a given resource map with the structure: {resource_name.sub_resource_name: *Resource}
 func fillResourcesMap(resourcesMap map[string]*Resource, rootKey string, resources []*Resource) {
 	for _, resource := range resources {
@@ -223,13 +305,4 @@ func fillResourcesMap(resourcesMap map[string]*Resource, rootKey string, resourc
 		resourcesMap[key] = resource
 		fillResourcesMap(resourcesMap, key, resource.SubResources)
 	}
-}
-
-// fillResourcesMap creates a cost components map with the structure: {cost_component_name: *CostComponent}
-func getCostComponentsMap(resource *Resource) map[string]*CostComponent {
-	result := make(map[string]*CostComponent)
-	for _, costComponent := range resource.CostComponents {
-		result[costComponent.Name] = costComponent
-	}
-	return result
 }

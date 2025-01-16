@@ -1,109 +1,42 @@
 package google
 
 import (
-	"strings"
-
+	"github.com/infracost/infracost/internal/resources/google"
 	"github.com/infracost/infracost/internal/schema"
-	"github.com/shopspring/decimal"
 )
 
-func GetComputeAddressRegistryItem() *schema.RegistryItem {
+func getComputeAddressRegistryItem() *schema.RegistryItem {
 	return &schema.RegistryItem{
-		Name:                "google_compute_address",
-		RFunc:               NewComputeAddress,
-		ReferenceAttributes: []string{},
+		Name:      "google_compute_address",
+		CoreRFunc: newComputeAddress,
+		ReferenceAttributes: []string{
+			"google_compute_instance.network_interface.0.access_config.0.nat_ip",
+		},
 	}
 }
-
-func GetComputeGlobalAddressRegistryItem() *schema.RegistryItem {
+func getComputeGlobalAddressRegistryItem() *schema.RegistryItem {
 	return &schema.RegistryItem{
-		Name:                "google_compute_global_address",
-		RFunc:               NewComputeAddress,
-		ReferenceAttributes: []string{},
-	}
-}
-
-func NewComputeAddress(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
-	region := d.Get("region").String()
-
-	addressType := d.Get("address_type").String()
-	if strings.ToLower(addressType) == "internal" {
-		return &schema.Resource{
-			Name:      d.Address,
-			NoPrice:   true,
-			IsSkipped: true,
-		}
-	}
-
-	return &schema.Resource{
-		Name: d.Address,
-		CostComponents: []*schema.CostComponent{
-			standardVMComputeAddress(),
-			preemptibleVMComputeAddress(),
-			unusedVMComputeAddress(region),
+		Name:      "google_compute_global_address",
+		CoreRFunc: newComputeAddress,
+		ReferenceAttributes: []string{
+			"google_compute_instance.network_interface.0.access_config.0.nat_ip",
 		},
 	}
 }
 
-func standardVMComputeAddress() *schema.CostComponent {
-	return &schema.CostComponent{
-		Name:           "IP address (if used by standard VM)",
-		Unit:           "hours",
-		UnitMultiplier: decimal.NewFromInt(1),
-		HourlyQuantity: decimalPtr(decimal.NewFromInt(1)),
-		ProductFilter: &schema.ProductFilter{
-			VendorName:    strPtr("gcp"),
-			Region:        strPtr("global"),
-			Service:       strPtr("Compute Engine"),
-			ProductFamily: strPtr("Network"),
-			AttributeFilters: []*schema.AttributeFilter{
-				{Key: "description", Value: strPtr("External IP Charge on a Standard VM")},
-			},
-		},
-		PriceFilter: &schema.PriceFilter{
-			StartUsageAmount: strPtr("744"), // use the non-free tier
-		},
+func newComputeAddress(d *schema.ResourceData) schema.CoreResource {
+	purchaseOption := ""
+	instanceRefs := d.References("google_compute_instance.network_interface.0.access_config.0.nat_ip")
+	if len(instanceRefs) > 0 {
+		purchaseOption = getComputePurchaseOption(instanceRefs[0].RawValues)
 	}
-}
 
-func preemptibleVMComputeAddress() *schema.CostComponent {
-	return &schema.CostComponent{
-		Name:           "IP address (if used by preemptible VM)",
-		Unit:           "hours",
-		UnitMultiplier: decimal.NewFromInt(1),
-		HourlyQuantity: decimalPtr(decimal.NewFromInt(1)),
-		ProductFilter: &schema.ProductFilter{
-			VendorName:    strPtr("gcp"),
-			Region:        strPtr("global"),
-			Service:       strPtr("Compute Engine"),
-			ProductFamily: strPtr("Network"),
-			AttributeFilters: []*schema.AttributeFilter{
-				{Key: "description", Value: strPtr("External IP Charge on a Preemptible VM")},
-			},
-		},
-		PriceFilter: &schema.PriceFilter{
-			EndUsageAmount: strPtr(""), // use the non-free tier
-		},
+	r := &google.ComputeAddress{
+		Address:                d.Address,
+		Region:                 d.Get("region").String(),
+		AddressType:            d.Get("address_type").String(),
+		Purpose:                d.Get("purpose").String(),
+		InstancePurchaseOption: purchaseOption,
 	}
-}
-
-func unusedVMComputeAddress(region string) *schema.CostComponent {
-	return &schema.CostComponent{
-		Name:           "IP address (if unused)",
-		Unit:           "hours",
-		UnitMultiplier: decimal.NewFromInt(1),
-		HourlyQuantity: decimalPtr(decimal.NewFromInt(1)),
-		ProductFilter: &schema.ProductFilter{
-			VendorName:    strPtr("gcp"),
-			Region:        strPtr(region),
-			Service:       strPtr("Compute Engine"),
-			ProductFamily: strPtr("Network"),
-			AttributeFilters: []*schema.AttributeFilter{
-				{Key: "description", Value: strPtr("Static Ip Charge")},
-			},
-		},
-		PriceFilter: &schema.PriceFilter{
-			EndUsageAmount: strPtr(""), // use the non-free tier
-		},
-	}
+	return r
 }

@@ -2,7 +2,6 @@ linters:
   disable-all: true
   enable:
     - bodyclose
-    - deadcode
     - errcheck
     - gocritic
     - gofmt
@@ -13,13 +12,16 @@ linters:
     - misspell
     - revive
     - staticcheck
-    - structcheck
     - typecheck
     - unused
-    - varcheck
+    - prealloc
 
 linters-settings:
   gocritic:
     disabled-checks:
       - ifElseChain
+  revive:
+    rules:
+      - name: error-strings
+        disabled: true
 

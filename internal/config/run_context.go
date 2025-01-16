@@ -3,22 +3,87 @@ package config
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
-	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/infracost/infracost/internal/logging"
+	intSync "github.com/infracost/infracost/internal/sync"
+	"github.com/infracost/infracost/internal/vcs"
 	"github.com/infracost/infracost/internal/version"
+
+	"github.com/google/uuid"
 )
 
+// ContextValues is a type that wraps a map with methods that safely
+// handle concurrent reads and writes.
+type ContextValues struct {
+	values map[string]interface{}
+	mu     *sync.RWMutex
+}
+
+// NewContextValues returns a new instance of ContextValues.
+func NewContextValues(values map[string]interface{}) *ContextValues {
+	return &ContextValues{
+		values: values,
+		mu:     &sync.RWMutex{},
+	}
+}
+
+// GetValue safely retrieves a value from the map.
+// It locks the mutex for reading, deferring the unlock until the method returns.
+// This prevents a race condition if a separate goroutine writes to the map concurrently.
+func (cv *ContextValues) GetValue(key string) (interface{}, bool) {
+	cv.mu.RLock()
+	defer cv.mu.RUnlock()
+
+	value, exists := cv.values[key]
+	return value, exists
+}
+
+// SetValue safely sets a value in the map.
+// It locks the mutex for writing, deferring the unlock until the method returns.
+// This prevents a race condition if separate goroutines read or write to the map concurrently.
+func (cv *ContextValues) SetValue(key string, value interface{}) {
+	cv.mu.Lock()
+	defer cv.mu.Unlock()
+	cv.values[key] = value
+}
+
+// Values safely retrieves a copy of the map.
+// This method locks the mutex for reading, deferring the unlock until the method returns.
+// By returning a copy, this prevents a race condition if separate goroutines read or write to the original map concurrently.
+// However, creating a copy may be expensive for large maps.
+func (cv *ContextValues) Values() map[string]interface{} {
+	cv.mu.RLock()
+	defer cv.mu.RUnlock()
+	copyMap := make(map[string]interface{})
+	for k, v := range cv.values {
+		copyMap[k] = v
+	}
+	return copyMap
+}
+
 type RunContext struct {
-	ctx               context.Context
-	Config            *Config
-	State             *State
-	contextVals       map[string]interface{}
-	currentProjectCtx *ProjectContext
-	StartTime         int64
+	ctx           context.Context
+	uuid          uuid.UUID
+	Config        *Config
+	State         *State
+	VCSMetadata   vcs.Metadata
+	CMD           string
+	ContextValues *ContextValues
+	mu            *sync.RWMutex
+	ModuleMutex   *intSync.KeyMutex
+	StartTime     int64
+
+	isCommentCmd bool
+
+	OutWriter io.Writer
+	ErrWriter io.Writer
+	Exit      func(code int)
 }
 
 func NewRunContextFromEnv(rootCtx context.Context) (*RunContext, error) {
@@ -31,60 +96,111 @@ func NewRunContextFromEnv(rootCtx context.Context) (*RunContext, error) {
 	state, _ := LoadState()
 
 	c := &RunContext{
-		ctx:         rootCtx,
-		Config:      cfg,
-		State:       state,
-		contextVals: map[string]interface{}{},
+		ctx:       rootCtx,
+		OutWriter: os.Stdout,
+		ErrWriter: os.Stderr,
+		Exit:      os.Exit,
+		uuid:      uuid.New(),
+		Config:    cfg,
+		State:     state,
+		ContextValues: NewContextValues(
+			map[string]interface{}{
+				"version":               baseVersion(version.Version),
+				"fullVersion":           version.Version,
+				"isTest":                IsTest(),
+				"isDev":                 IsDev(),
+				"os":                    runtime.GOOS,
+				"ciPlatform":            ciPlatform(),
+				"cliPlatform":           os.Getenv("INFRACOST_CLI_PLATFORM"),
+				"ciScript":              ciScript(),
+				"ciPostCondition":       os.Getenv("INFRACOST_CI_POST_CONDITION"),
+				"ciPercentageThreshold": os.Getenv("INFRACOST_CI_PERCENTAGE_THRESHOLD"),
+			}),
+		ModuleMutex: &intSync.KeyMutex{},
 		StartTime:   time.Now().Unix(),
 	}
-
-	c.loadInitialContextValues()
 
 	return c, nil
 }
 
 func EmptyRunContext() *RunContext {
 	return &RunContext{
-		Config:      &Config{},
-		State:       &State{},
-		contextVals: map[string]interface{}{},
-		StartTime:   time.Now().Unix(),
+		Config:        &Config{},
+		State:         &State{},
+		ContextValues: NewContextValues(map[string]interface{}{}),
+		mu:            &sync.RWMutex{},
+		ModuleMutex:   &intSync.KeyMutex{},
+		StartTime:     time.Now().Unix(),
+		OutWriter:     os.Stdout,
+		ErrWriter:     os.Stderr,
+		Exit:          os.Exit,
 	}
 }
 
-func (c *RunContext) SetContextValue(key string, value interface{}) {
-	c.contextVals[key] = value
+// IsAutoDetect returns true if the command is running with auto-detect functionality.
+func (r *RunContext) IsAutoDetect() bool {
+	return len(r.Config.Projects) <= 1 && r.Config.ConfigFilePath == ""
 }
 
-func (c *RunContext) ContextValues() map[string]interface{} {
-	return c.contextVals
-}
+func (r *RunContext) GetParallelism() (int, error) {
+	var parallelism int
 
-func (c *RunContext) ContextValuesWithCurrentProject() map[string]interface{} {
-	m := c.contextVals
-	if c.currentProjectCtx != nil {
-		for k, v := range c.currentProjectCtx.contextVals {
-			m[k] = v
+	if r.Config.Parallelism == nil {
+		parallelism = 4
+		numCPU := runtime.NumCPU()
+		if numCPU*4 > parallelism {
+			parallelism = numCPU * 4
 		}
+
+		if parallelism > 16 {
+			parallelism = 16
+		}
+
+		return parallelism, nil
 	}
 
-	return m
+	parallelism = *r.Config.Parallelism
+
+	if parallelism < 0 {
+		return parallelism, fmt.Errorf("parallelism must be a positive number")
+	}
+
+	if parallelism > 16 {
+		return parallelism, fmt.Errorf("parallelism must be less than 16")
+	}
+
+	return parallelism, nil
 }
 
-func (c *RunContext) EventEnv() map[string]interface{} {
-	return c.EventEnvWithProjectContexts([]*ProjectContext{c.currentProjectCtx})
+// Context returns the underlying context.
+func (r *RunContext) Context() context.Context {
+	return r.ctx
 }
 
-func (c *RunContext) EventEnvWithProjectContexts(projectContexts []*ProjectContext) map[string]interface{} {
-	env := c.contextVals
-	env["installId"] = c.State.InstallID
+// UUID returns the underlying run uuid. This can be used to globally identify the run context.
+func (r *RunContext) UUID() uuid.UUID {
+	return r.uuid
+}
+
+func (r *RunContext) VCSRepositoryURL() string {
+	return r.VCSMetadata.Remote.URL
+}
+
+func (r *RunContext) EventEnv() map[string]interface{} {
+	return r.EventEnvWithProjectContexts([]*ProjectContext{})
+}
+
+func (r *RunContext) EventEnvWithProjectContexts(projectContexts []*ProjectContext) map[string]interface{} {
+	env := r.ContextValues.Values()
+
+	env["installId"] = r.State.InstallID
 
 	for _, projectContext := range projectContexts {
 		if projectContext == nil {
 			continue
 		}
 
-		for k, v := range projectContext.ContextValues() {
+		for k, v := range projectContext.ContextValues.Values() {
 			if _, ok := env[k]; !ok {
 				env[k] = make([]interface{}, 0)
 			}
@@ -95,20 +211,47 @@ func (c *RunContext) EventEnvWithProjectContexts(projectContexts []*ProjectConte
 	return env
 }
 
-func (c *RunContext) SetCurrentProjectContext(ctx *ProjectContext) {
-	c.currentProjectCtx = ctx
+func (r *RunContext) IsCIRun() bool {
+	p, _ := r.ContextValues.GetValue("ciPlatform")
+	return p != "" && !IsTest()
 }
 
-func (c *RunContext) loadInitialContextValues() {
-	c.SetContextValue("version", baseVersion(version.Version))
-	c.SetContextValue("fullVersion", version.Version)
-	c.SetContextValue("isTest", IsTest())
-	c.SetContextValue("isDev", IsDev())
-	c.SetContextValue("os", runtime.GOOS)
-	c.SetContextValue("ciPlatform", ciPlatform())
-	c.SetContextValue("ciScript", ciScript())
-	c.SetContextValue("ciPostCondition", os.Getenv("INFRACOST_CI_POST_CONDITION"))
-	c.SetContextValue("ciPercentageThreshold", os.Getenv("INFRACOST_CI_PERCENTAGE_THRESHOLD"))
+// SetIsInfracostComment identifies that the primary command being run is `infracost comment`
+func (r *RunContext) SetIsInfracostComment() {
+	r.isCommentCmd = true
+}
+
+func (r *RunContext) IsInfracostComment() bool {
+	return r.isCommentCmd
+}
+
+func (r *RunContext) IsCloudEnabled() bool {
+	if r.Config.EnableCloud != nil {
+		logging.Logger.Debug().Str("is_cloud_enabled", fmt.Sprintf("%v", *r.Config.EnableCloud)).Msg("IsCloudEnabled explicitly set through Config.EnabledCloud")
+		return *r.Config.EnableCloud
+	}
+
+	if r.Config.EnableCloudForOrganization {
+		logging.Logger.Debug().Msg("IsCloudEnabled is true with org level setting enabled.")
+		return true
+	}
+
+	logging.Logger.Debug().Str("is_cloud_enabled", fmt.Sprintf("%v", r.Config.EnableDashboard)).Msg("IsCloudEnabled inferred from Config.EnabledDashboard")
+	return r.Config.EnableDashboard
+}
+
+func (r *RunContext) IsCloudUploadEnabled() bool {
+	if r.Config.EnableCloudUpload != nil {
+		return *r.Config.EnableCloudUpload
+	}
+	return r.IsCloudEnabled()
+}
+
+// IsCloudUploadExplicitlyEnabled returns true if cloud upload has been enabled through one of the
+// env variables ENABLE_CLOUD, ENABLE_CLOUD_UPLOAD, or ENABLE_DASHBOARD
+func (r *RunContext) IsCloudUploadExplicitlyEnabled() bool {
+	return r.IsCloudUploadEnabled() &&
+		(r.Config.EnableCloud != nil || r.Config.EnableCloudUpload != nil || r.Config.EnableDashboard)
 }
 
 func baseVersion(v string) string {
@@ -116,7 +259,11 @@ func baseVersion(v string) string {
 }
 
 func ciScript() string {
-	if IsEnvPresent("INFRACOST_CI_DIFF") {
+	if IsEnvPresent("INFRACOST_CI_IMAGE") {
+		return "ci-image"
+	} else if IsEnvPresent("INFRACOST_GITHUB_ACTION") {
+		return "infracost-github-action"
+	} else if IsEnvPresent("INFRACOST_CI_DIFF") {
 		return "ci-diff"
 	} else if IsEnvPresent("INFRACOST_CI_ATLANTIS_DIFF") {
 		return "ci-atlantis-diff"
@@ -127,44 +274,76 @@ func ciScript() string {
 	return ""
 }
 
+// ciEnvMap contains information to detect what ci system the current process is running in.
+type ciEnvMap struct {
+	// vars is a list of OS env var names mapping to know ci system. If the key of this map is
+	// present in OS env then it is assumed we are running in that CI system.
+	vars map[string]string
+	// prefixes contains a list of OS env var name prefixes. If the key of this map is
+	// matches the prefix of any OS env then it is assumed we are running in that CI system.
+	prefixes map[string]string
+}
+
+var ciMap = ciEnvMap{
+	vars: map[string]string{
+		"GITHUB_ACTIONS":       "github_actions",
+		"GITLAB_CI":            "gitlab_ci",
+		"CIRCLECI":             "circleci",
+		"JENKINS_HOME":         "jenkins",
+		"BUILDKITE":            "buildkite",
+		"SYSTEM_COLLECTIONURI": fmt.Sprintf("azure_devops_%s", os.Getenv("BUILD_REPOSITORY_PROVIDER")),
+		"TFC_RUN_ID":           "tfc",
+		"ENV0_ENVIRONMENT_ID":  "env0",
+		"SCALR_RUN_ID":         "scalr",
+		"CF_BUILD_ID":          "codefresh",
+		"TRAVIS":               "travis",
+		"CODEBUILD_CI":         "codebuild",
+		"TEAMCITY_VERSION":     "teamcity",
+		"BUDDYBUILD_BRANCH":    "buddybuild",
+		"BITRISE_IO":           "bitrise",
+		"SEMAPHORE":            "semaphoreci",
+		"APPVEYOR":             "appveyor",
+		"WERCKER_GIT_BRANCH":   "wercker",
+		"MAGNUM":               "magnumci",
+		"SHIPPABLE":            "shippable",
+		"TDDIUM":               "tddium",
+		"GREENHOUSE":           "greenhouse",
+		"CIRRUS_CI":            "cirrusci",
+		"TS_ENV":               "terraspace",
+	},
+	prefixes: map[string]string{
+		"ATLANTIS_":       "atlantis",
+		"BITBUCKET_":      "bitbucket",
+		"CONCOURSE_":      "concourse",
+		"SPACELIFT_":      "spacelift",
+		"HARNESS_":        "harness",
+		"TERRATEAM_":      "terrateam",
+		"KEPTN_":          "keptn",
+		"CLOUDCONCIERGE_": "cloudconcierge",
+	},
+}
+
 func ciPlatform() string {
-	if IsEnvPresent("GITHUB_ACTIONS") {
-		return "github_actions"
-	} else if IsEnvPresent("GITLAB_CI") {
-		return "gitlab_ci"
-	} else if IsEnvPresent("CIRCLECI") {
-		return "circleci"
-	} else if IsEnvPresent("JENKINS_HOME") {
-		return "jenkins"
-	} else if IsEnvPresent("BUILDKITE") {
-		return "buildkite"
-	} else if IsEnvPresent("SYSTEM_COLLECTIONURI") {
-		return fmt.Sprintf("azure_devops_%s", os.Getenv("BUILD_REPOSITORY_PROVIDER"))
-	} else if IsEnvPresent("TFC_RUN_ID") {
-		return "tfc"
-	} else if IsEnvPresent("ENV0_ENVIRONMENT_ID") {
-		return "env0"
-	} else if IsEnvPresent("SCALR_RUN_ID") {
-		return "scalr"
-	} else {
-		envKeys := os.Environ()
-		sort.Strings(envKeys)
-		for _, k := range envKeys {
-			if strings.HasPrefix(k, "ATLANTIS_") {
-				return "atlantis"
-			} else if strings.HasPrefix(k, "BITBUCKET_") {
-				return "bitbucket"
-			} else if strings.HasPrefix(k, "CONCOURSE_") {
-				return "concourse"
-			} else if strings.HasPrefix(k, "SPACELIFT_") {
-				return "spacelift"
-			} else if strings.HasPrefix(k, "HARNESS_") {
-				return "harness"
+	if os.Getenv("INFRACOST_CI_PLATFORM") != "" {
+		return os.Getenv("INFRACOST_CI_PLATFORM")
+	}
+
+	for env, name := range ciMap.vars {
+		if IsEnvPresent(env) {
+			return name
+		}
+	}
+
+	for _, k := range os.Environ() {
+		for prefix, name := range ciMap.prefixes {
+			if strings.HasPrefix(k, prefix) {
+				return name
 			}
 		}
-		if IsEnvPresent("CI") {
-			return "ci"
-		}
+	}
+
+	if IsEnvPresent("CI") {
+		return "ci"
 	}
 
 	return ""

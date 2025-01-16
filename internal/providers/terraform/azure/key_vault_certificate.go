@@ -1,11 +1,12 @@
 package azure
 
 import (
-	"strings"
-
-	"github.com/infracost/infracost/internal/schema"
 	"github.com/shopspring/decimal"
-	log "github.com/sirupsen/logrus"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
+
+	"github.com/infracost/infracost/internal/logging"
+	"github.com/infracost/infracost/internal/schema"
 )
 
 func GetAzureRMKeyVaultCertificateRegistryItem() *schema.RegistryItem {
@@ -15,20 +16,23 @@ func GetAzureRMKeyVaultCertificateRegistryItem() *schema.RegistryItem {
 		ReferenceAttributes: []string{
 			"key_vault_id",
 		},
+		GetRegion: func(defaultRegion string, d *schema.ResourceData) string {
+			return lookupRegion(d, []string{"key_vault_id"})
+		},
 	}
 }
 
 func NewAzureRMKeyVaultCertificate(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
-	region := lookupRegion(d, []string{"key_vault_id"})
+	region := d.Region
 
 	var costComponents []*schema.CostComponent
 
 	var skuName string
 	keyVault := d.References("key_vault_id")
 	if len(keyVault) > 0 {
-		skuName = strings.Title(keyVault[0].Get("sku_name").String())
+		skuName = cases.Title(language.English).String(keyVault[0].Get("sku_name").String())
 	} else {
-		log.Warnf("Skipping resource %s. Could not find its 'key_vault_id.sku_name' property.", d.Address)
+		logging.Logger.Warn().Msgf("Skipping resource %s. Could not find its 'key_vault_id.sku_name' property.", d.Address)
 		return nil
 	}
 

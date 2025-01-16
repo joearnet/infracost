@@ -1,8 +1,9 @@
 package azure
 
 import (
-	"github.com/infracost/infracost/internal/schema"
 	"github.com/shopspring/decimal"
+
+	"github.com/infracost/infracost/internal/schema"
 )
 
 func GetAzureRMPublicIPPrefixRegistryItem() *schema.RegistryItem {
@@ -13,7 +14,7 @@ func GetAzureRMPublicIPPrefixRegistryItem() *schema.RegistryItem {
 }
 
 func NewAzureRMPublicIPPrefix(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
-	region := lookupRegion(d, []string{})
+	region := d.Region
 
 	costComponents := make([]*schema.CostComponent, 0)
 
@@ -37,7 +38,7 @@ func PublicIPPrefixCostComponent(name, region string) *schema.CostComponent {
 			ProductFamily: strPtr("Networking"),
 			AttributeFilters: []*schema.AttributeFilter{
 				{Key: "productName", Value: strPtr("Public IP Prefix")},
-				{Key: "meterName", Value: strPtr("Static IP Addresses")},
+				{Key: "meterName", ValueRegex: strPtr("/Static IP Addresses/i")},
 			},
 		},
 		PriceFilter: &schema.PriceFilter{

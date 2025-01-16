@@ -1,14 +1,14 @@
 package config
 
 import (
-	"io/ioutil"
 	"os"
 	"path"
 	"strings"
 
 	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v2"
+
+	"github.com/infracost/infracost/internal/logging"
 )
 
 var credentialsVersion = "0.1"
@@ -24,8 +24,7 @@ func loadCredentials(cfg *Config) error {
 
 	err = cfg.migrateCredentials()
 	if err != nil {
-		logrus.Debug("Error migrating credentials")
-		logrus.Debug(err)
+		logging.Logger.Debug().Err(err).Msg("Error migrating credentials")
 	}
 
 	cfg.Credentials, err = readCredentialsFileIfExists()
@@ -59,7 +58,7 @@ func readCredentialsFileIfExists() (Credentials, error) {
 		return Credentials{}, nil
 	}
 
-	data, err := ioutil.ReadFile(CredentialsFilePath())
+	data, err := os.ReadFile(CredentialsFilePath())
 	if err != nil {
 		return Credentials{}, err
 	}
@@ -82,7 +81,7 @@ func writeCredentialsFile(c Credentials) error {
 		return err
 	}
 
-	return ioutil.WriteFile(CredentialsFilePath(), data, 0600)
+	return os.WriteFile(CredentialsFilePath(), data, 0600)
 }
 
 func CredentialsFilePath() string {

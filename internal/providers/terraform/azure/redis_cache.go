@@ -4,9 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/infracost/infracost/internal/schema"
 	"github.com/shopspring/decimal"
 	"github.com/tidwall/gjson"
+
+	"github.com/infracost/infracost/internal/schema"
 )
 
 func GetAzureRMRedisCacheRegistryItem() *schema.RegistryItem {
@@ -17,7 +18,7 @@ func GetAzureRMRedisCacheRegistryItem() *schema.RegistryItem {
 }
 
 func NewAzureRMRedisCache(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
-	region := lookupRegion(d, []string{})
+	region := d.Region
 
 	skuName := d.Get("sku_name").String()
 	family := d.Get("family").String()
@@ -26,49 +27,66 @@ func NewAzureRMRedisCache(d *schema.ResourceData, u *schema.UsageData) *schema.R
 	sku := family + capacity
 	productName := fmt.Sprintf("Azure Redis Cache %s", skuName)
 
-	nodes := map[string]int64{
+	nodesPerShard := map[string]int64{
 		"basic":    1,
 		"standard": 2,
 		"premium":  2,
 	}[strings.ToLower(skuName)]
 
-	componentName := fmt.Sprintf("Cache usage (%s_%s%s", skuName, family, capacity)
+	shards := int64(1)
 
-	if strings.ToLower(skuName) == "premium" {
-		if d.Get("replicas_per_master").Type != gjson.Null {
-			nodes = 1 + d.Get("replicas_per_master").Int()
+	if strings.EqualFold(skuName, "premium") {
+		// If shards is set to 0 then we still want to calculate the cost for 1 shard
+		// since the cache will be in HA-mode not cluster mode.
+		if d.Get("shard_count").Int() > 0 {
+			shards = d.Get("shard_count").Int()
 		}
 
-		if d.Get("shard_count").Type != gjson.Null {
-			nodes = 2 * d.Get("shard_count").Int()
+		if d.Get("replicas_per_primary").Type != gjson.Null {
+			nodesPerShard = 1 + d.Get("replicas_per_primary").Int()
+		} else if d.Get("replicas_per_master").Type != gjson.Null {
+			nodesPerShard = 1 + d.Get("replicas_per_master").Int()
 		}
+	}
 
-		nodesName := "node"
-		if nodes > 1 {
-			nodesName += "s"
-		}
+	nodes := shards * nodesPerShard
 
-		componentName = fmt.Sprintf("%s, %v %s", componentName, nodes, nodesName)
+	qty := decimal.NewFromInt(nodes)
+	mul := schema.HourToMonthUnitMultiplier
+	attributes := []*schema.AttributeFilter{
+		{Key: "productName", ValueRegex: strPtr(fmt.Sprintf("/^%s$/i", productName))},
+		{Key: "skuName", ValueRegex: strPtr(fmt.Sprintf("/^%s$/i", sku))},
+	}
+
+	if strings.EqualFold(skuName, "premium") {
+		attributes = append(attributes,
+			&schema.AttributeFilter{Key: "meterName", ValueRegex: strPtr(fmt.Sprintf("/^%s Cache Instance$/i", sku))},
+		)
+	} else {
+		attributes = append(attributes,
+			&schema.AttributeFilter{Key: "meterName", ValueRegex: strPtr(fmt.Sprintf("/^%s Cache$/i", sku))},
+		)
+	}
+
+	if strings.EqualFold(skuName, "standard") {
+		qty = qty.Div(decimal.NewFromInt(2))
+		mul = mul.Div(decimal.NewFromInt(2))
 	}
 
 	return &schema.Resource{
 		Name: d.Address,
 		CostComponents: []*schema.CostComponent{
 			{
-				Name:           componentName + ")",
-				Unit:           "hours",
-				UnitMultiplier: decimal.NewFromInt(1),
-				HourlyQuantity: decimalPtr(decimal.NewFromInt(nodes)),
+				Name:           fmt.Sprintf("Cache usage (%s_%s%s)", skuName, family, capacity),
+				Unit:           "nodes",
+				UnitMultiplier: mul,
+				HourlyQuantity: decimalPtr(qty),
 				ProductFilter: &schema.ProductFilter{
-					VendorName:    strPtr("azure"),
-					Region:        strPtr(region),
-					Service:       strPtr("Redis Cache"),
-					ProductFamily: strPtr("Databases"),
-					AttributeFilters: []*schema.AttributeFilter{
-						{Key: "productName", ValueRegex: strPtr(fmt.Sprintf("/^%s$/i", productName))},
-						{Key: "skuName", ValueRegex: strPtr(fmt.Sprintf("/^%s$/i", sku))},
-						{Key: "meterName", ValueRegex: strPtr(fmt.Sprintf("/^%s Cache$/i", sku))},
-					},
+					VendorName:       strPtr("azure"),
+					Region:           strPtr(region),
+					Service:          strPtr("Redis Cache"),
+					ProductFamily:    strPtr("Databases"),
+					AttributeFilters: attributes,
 				},
 				PriceFilter: &schema.PriceFilter{
 					PurchaseOption: strPtr("Consumption"),

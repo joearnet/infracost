@@ -5,7 +5,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,17 +12,20 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
+	"github.com/infracost/infracost/internal/hcl"
+	"github.com/infracost/infracost/internal/logging"
 	"github.com/infracost/infracost/internal/output"
 	"github.com/infracost/infracost/internal/usage"
-	"github.com/stretchr/testify/require"
+
+	"github.com/pkg/errors"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/infracost/infracost/internal/config"
 	"github.com/infracost/infracost/internal/prices"
 	"github.com/infracost/infracost/internal/schema"
 	"github.com/infracost/infracost/internal/testutil"
-	"github.com/pkg/errors"
-	log "github.com/sirupsen/logrus"
-	"github.com/stretchr/testify/assert"
 
 	"github.com/infracost/infracost/internal/providers/terraform"
 )
@@ -45,11 +47,9 @@ var tfProviders = `
 
 	provider "aws" {
 		region                      = "us-east-1"
-		s3_force_path_style         = true
 		skip_credentials_validation = true
 		skip_metadata_api_check     = true
 		skip_requesting_account_id  = true
-		skip_get_ec2_platforms      = true
 		skip_region_validation      = true
 		access_key                  = "mock_access_key"
 		secret_key                  = "mock_secret_key"
@@ -116,7 +116,7 @@ func installPlugins() error {
 
 	err := os.MkdirAll(initCache, os.ModePerm)
 	if err != nil {
-		log.Errorf("Error creating init cache directory: %s", err.Error())
+		logging.Logger.Error().Msgf("Error creating init cache directory: %s", err.Error())
 	}
 
 	tfdir, err := writeToTmpDir(initCache, project)
@@ -126,7 +126,7 @@ func installPlugins() error {
 
 	err = os.MkdirAll(pluginCache, os.ModePerm)
 	if err != nil {
-		log.Errorf("Error creating plugin cache directory: %s", err.Error())
+		logging.Logger.Error().Msgf("Error creating plugin cache directory: %s", err.Error())
 	} else {
 		os.Setenv("TF_PLUGIN_CACHE_DIR", pluginCache)
 	}
@@ -143,7 +143,7 @@ func installPlugins() error {
 	return nil
 }
 
-func ResourceTests(t *testing.T, tf string, usage map[string]*schema.UsageData, checks []testutil.ResourceCheck) {
+func ResourceTests(t *testing.T, tf string, usage schema.UsageMap, checks []testutil.ResourceCheck) {
 	project := TerraformProject{
 		Files: []File{
 			{
@@ -156,11 +156,36 @@ func ResourceTests(t *testing.T, tf string, usage map[string]*schema.UsageData, 
 	ResourceTestsForTerraformProject(t, project, usage, checks)
 }
 
-func ResourceTestsForTerraformProject(t *testing.T, tfProject TerraformProject, usage map[string]*schema.UsageData, checks []testutil.ResourceCheck) {
+func ResourceTestsForTerraformProject(t *testing.T, tfProject TerraformProject, usage schema.UsageMap, checks []testutil.ResourceCheck, ctxOptions ...func(ctx *config.RunContext)) {
+	t.Run("HCL", func(t *testing.T) {
+		resourceTestsForTfProject(t, "hcl", tfProject, usage, checks, ctxOptions...)
+	})
+
+	t.Run("HCL Graph", func(t *testing.T) {
+		ctxOptions = append(ctxOptions, func(ctx *config.RunContext) {
+			ctx.Config.GraphEvaluator = true
+		})
+		resourceTestsForTfProject(t, "hcl", tfProject, usage, checks, ctxOptions...)
+	})
+
+	t.Run("Terraform CLI", func(t *testing.T) {
+		resourceTestsForTfProject(t, "terraform", tfProject, usage, checks, ctxOptions...)
+	})
+}
+
+func resourceTestsForTfProject(t *testing.T, pName string, tfProject TerraformProject, usage schema.UsageMap, checks []testutil.ResourceCheck, ctxOptions ...func(ctx *config.RunContext)) {
+	t.Helper()
+
 	runCtx, err := config.NewRunContextFromEnv(context.Background())
 	assert.NoError(t, err)
 
-	projects, err := RunCostCalculations(t, runCtx, tfProject, usage)
+	for _, ctxOption := range ctxOptions {
+		ctxOption(runCtx)
+	}
+
+	projects := loadResources(t, pName, tfProject, runCtx, usage)
+
+	projects, err = RunCostCalculations(runCtx, projects)
 	assert.NoError(t, err)
 	assert.Len(t, projects, 1)
 
@@ -170,6 +195,8 @@ func ResourceTestsForTerraformProject(t *testing.T, tfProject TerraformProject, 
 type GoldenFileOptions = struct {
 	Currency    string
 	CaptureLogs bool
+	IgnoreCLI   bool
+	LogLevel    *string
 }
 
 func DefaultGoldenFileOptions() *GoldenFileOptions {
@@ -183,12 +210,49 @@ func GoldenFileResourceTests(t *testing.T, testName string) {
 	GoldenFileResourceTestsWithOpts(t, testName, DefaultGoldenFileOptions())
 }
 
-func GoldenFileResourceTestsWithOpts(t *testing.T, testName string, options *GoldenFileOptions) {
+func GoldenFileResourceTestsWithOpts(t *testing.T, testName string, options *GoldenFileOptions, ctxOptions ...func(ctx *config.RunContext)) {
+	t.Run("HCL", func(t *testing.T) {
+		goldenFileResourceTestWithOpts(t, "hcl", testName, options, ctxOptions...)
+	})
+
+	t.Run("HCL Graph", func(t *testing.T) {
+		ctxOptions = append(ctxOptions, func(ctx *config.RunContext) {
+			ctx.Config.GraphEvaluator = true
+		})
+		goldenFileResourceTestWithOpts(t, "hcl", testName, options, ctxOptions...)
+	})
+
+	if options != nil && options.IgnoreCLI {
+		return
+	}
+
+	t.Run("Terraform CLI", func(t *testing.T) {
+		goldenFileResourceTestWithOpts(t, "terraform", testName, options, ctxOptions...)
+	})
+}
+
+func GoldenFileHCLResourceTestsWithOpts(t *testing.T, testName string, options *GoldenFileOptions, ctxOptions ...func(ctx *config.RunContext)) {
+	goldenFileResourceTestWithOpts(t, "hcl", testName, options, ctxOptions...)
+}
+
+func goldenFileResourceTestWithOpts(t *testing.T, pName string, testName string, options *GoldenFileOptions, ctxOptions ...func(ctx *config.RunContext)) {
+	t.Helper()
+
 	runCtx, err := config.NewRunContextFromEnv(context.Background())
+	assert.NoError(t, err)
+
+	for _, ctxOption := range ctxOptions {
+		ctxOption(runCtx)
+	}
+
+	level := "warn"
+	if options.LogLevel != nil {
+		level = *options.LogLevel
+	}
 
 	var logBuf *bytes.Buffer
 	if options != nil && options.CaptureLogs {
-		logBuf = testutil.ConfigureTestToCaptureLogs(t, runCtx)
+		logBuf = testutil.ConfigureTestToCaptureLogs(t, runCtx, level)
 	} else {
 		testutil.ConfigureTestToFailOnLogs(t, runCtx)
 	}
@@ -200,7 +264,7 @@ func GoldenFileResourceTestsWithOpts(t *testing.T, testName string, options *Gol
 	require.NoError(t, err)
 
 	// Load the terraform projects
-	tfProjectData, err := ioutil.ReadFile(filepath.Join("testdata", testName, testName+".tf"))
+	tfProjectData, err := os.ReadFile(filepath.Join("testdata", testName, testName+".tf"))
 	require.NoError(t, err)
 	tfProject := TerraformProject{
 		Files: []File{
@@ -212,19 +276,25 @@ func GoldenFileResourceTestsWithOpts(t *testing.T, testName string, options *Gol
 	}
 
 	// Load the usage data, if any.
-	var usageData map[string]*schema.UsageData
+	var usageData schema.UsageMap
 	usageFilePath := filepath.Join("testdata", testName, testName+".usage.yml")
 	if _, err := os.Stat(usageFilePath); err == nil || !os.IsNotExist(err) {
 		// usage file exists, load the data
-		usageData, err = usage.LoadFromFile(usageFilePath, false)
+		usageFile, err := usage.LoadUsageFile(usageFilePath)
 		require.NoError(t, err)
+		usageData = usageFile.ToUsageDataMap()
 	}
 
+	projects := loadResources(t, pName, tfProject, runCtx, usageData)
+
 	// Generate the output
-	projects, err := RunCostCalculations(t, runCtx, tfProject, usageData)
+	projects, err = RunCostCalculations(runCtx, projects)
 	require.NoError(t, err)
 
-	r := output.ToOutputFormat(projects)
+	r, err := output.ToOutputFormat(runCtx.Config, projects)
+	if err != nil {
+		require.NoError(t, err)
+	}
 	r.Currency = runCtx.Config.Currency
 
 	opts := output.Options{
@@ -255,51 +325,147 @@ func GoldenFileResourceTestsWithOpts(t *testing.T, testName string, options *Gol
 	testutil.AssertGoldenFile(t, goldenFilePath, actual)
 }
 
-func RunCostCalculations(t *testing.T, runCtx *config.RunContext, tfProject TerraformProject, usage map[string]*schema.UsageData) ([]*schema.Project, error) {
-	projects, err := loadResources(t, runCtx, tfProject, usage)
-	if err != nil {
-		return projects, err
+func loadResources(t *testing.T, pName string, tfProject TerraformProject, runCtx *config.RunContext, usageData schema.UsageMap) []*schema.Project {
+	t.Helper()
+
+	tfdir := createTerraformProject(t, tfProject)
+	runCtx.Config.RootPath = tfdir
+	var provider schema.Provider
+	if pName == "hcl" {
+		provider = newHCLProvider(t, runCtx, tfdir)
+	} else {
+		provider = terraform.NewDirProvider(config.NewProjectContext(runCtx, &config.Project{
+			Path: tfdir,
+		}, nil), false)
 	}
 
+	projects, err := provider.LoadResources(usageData)
+	require.NoError(t, err)
+
 	for _, project := range projects {
-		err = prices.PopulatePrices(runCtx.Config, project)
+		project.Name = strings.ReplaceAll(project.Name, tfdir, t.Name())
+		project.Name = strings.ReplaceAll(project.Name, "/Terraform_CLI", "")
+		project.Name = strings.ReplaceAll(project.Name, "/HCL_Graph", "")
+		project.Name = strings.ReplaceAll(project.Name, "/HCL", "")
+		project.BuildResources(schema.UsageMap{})
+	}
+
+	return projects
+}
+
+func RunCostCalculations(runCtx *config.RunContext, projects []*schema.Project) ([]*schema.Project, error) {
+	pf := prices.NewPriceFetcher(runCtx, true)
+	for _, project := range projects {
+		err := pf.PopulatePrices(project)
 		if err != nil {
 			return projects, err
 		}
+
 		schema.CalculateCosts(project)
 	}
+
 	return projects, nil
+}
+
+func GoldenFileUsageSyncTest(t *testing.T, testName string, ctxOptions ...func(ctx *config.RunContext)) {
+	t.Run("HCL", func(t *testing.T) {
+		goldenFileSyncTest(t, "hcl", testName)
+	})
+
+	t.Run("HCL Graph", func(t *testing.T) {
+		ctxOptions = append(ctxOptions, func(ctx *config.RunContext) {
+			ctx.Config.GraphEvaluator = true
+		})
+		goldenFileSyncTest(t, "hcl", testName, ctxOptions...)
+	})
+
+	t.Run("Terraform CLI", func(t *testing.T) {
+		goldenFileSyncTest(t, "terraform", testName, ctxOptions...)
+	})
+}
+
+func goldenFileSyncTest(t *testing.T, pName, testName string, ctxOptions ...func(ctx *config.RunContext)) {
+	runCtx, err := config.NewRunContextFromEnv(context.Background())
+	require.NoError(t, err)
+
+	for _, ctxOption := range ctxOptions {
+		ctxOption(runCtx)
+	}
+
+	tfProjectData, err := os.ReadFile(filepath.Join("testdata", testName, testName+".tf"))
+	require.NoError(t, err)
+	tfProject := TerraformProject{
+		Files: []File{
+			{
+				Path:     "main.tf",
+				Contents: string(tfProjectData),
+			},
+		},
+	}
+
+	projectCtx := config.NewProjectContext(runCtx, &config.Project{}, nil)
+
+	usageFilePath := filepath.Join("testdata", testName, testName+"_existing_usage.yml")
+	projects := loadResources(t, pName, tfProject, runCtx, schema.UsageMap{})
+
+	actual := RunSyncUsage(t, projectCtx, projects, usageFilePath)
+	require.NoError(t, err)
+
+	goldenFilePath := filepath.Join("testdata", testName, testName+".golden")
+	testutil.AssertGoldenFile(t, goldenFilePath, actual)
+}
+
+func RunSyncUsage(t *testing.T, projectCtx *config.ProjectContext, projects []*schema.Project, usageFilePath string) []byte {
+	t.Helper()
+	usageFile, err := usage.LoadUsageFile(usageFilePath)
+	require.NoError(t, err)
+
+	_, err = usage.SyncUsageData(projectCtx, usageFile, projects)
+	require.NoError(t, err)
+
+	out := filepath.Join(t.TempDir(), "actual_usage.yml")
+	err = usageFile.WriteToPath(out)
+	require.NoError(t, err)
+
+	b, err := os.ReadFile(out)
+	require.NoError(t, err)
+
+	return b
 }
 
 func CreateTerraformProject(tmpDir string, tfProject TerraformProject) (string, error) {
 	return writeToTmpDir(tmpDir, tfProject)
 }
 
-func loadResources(t *testing.T, runCtx *config.RunContext, tfProject TerraformProject, usage map[string]*schema.UsageData) ([]*schema.Project, error) {
+func newHCLProvider(t *testing.T, runCtx *config.RunContext, tfdir string) *terraform.HCLProvider {
+	t.Helper()
+
+	projectCtx := config.NewProjectContext(runCtx, &config.Project{
+		Path: tfdir,
+	}, nil)
+
+	provider, err := terraform.NewHCLProvider(projectCtx, hcl.RootPath{StartingPath: tfdir, DetectedPath: tfdir}, &terraform.HCLProviderConfig{SuppressLogging: true})
+	require.NoError(t, err)
+
+	return provider
+}
+
+func createTerraformProject(t *testing.T, tfProject TerraformProject) string {
+	t.Helper()
 	tmpDir := t.TempDir()
 
 	_, err := os.ReadDir(initCache)
 	if err == nil {
-		if err := copyInitCacheToPath(initCache, tmpDir); err != nil {
-			return nil, err
-		}
+		err := copyInitCacheToPath(initCache, tmpDir)
+		require.NoError(t, err)
 	} else {
-		t.Log(fmt.Sprintf("Couldn't copy terraform init cache from %s", initCache))
+		t.Logf("Couldn't copy terraform init cache from %s", initCache)
 	}
 
 	tfdir, err := CreateTerraformProject(tmpDir, tfProject)
-	if err != nil {
-		return nil, err
-	}
+	require.NoError(t, err)
 
-	provider := terraform.NewDirProvider(config.NewProjectContext(
-		runCtx,
-		&config.Project{
-			Path: tfdir,
-		},
-	))
-
-	return provider.LoadResources(usage)
+	return tfdir
 }
 
 func copyInitCacheToPath(source, destination string) error {
@@ -330,12 +496,12 @@ func copyInitCacheToPath(source, destination string) error {
 				}
 			} else {
 				if file.Name() != "init.tf" { // don't copy init.tf since the provider block will conflict with main.tf
-					srcData, err := ioutil.ReadFile(srcPath)
+					srcData, err := os.ReadFile(srcPath)
 					if err != nil {
 						return err
 					}
 
-					if err := ioutil.WriteFile(destPath, srcData, os.ModePerm); err != nil {
+					if err := os.WriteFile(destPath, srcData, os.ModePerm); err != nil { // nolint: gosec
 						return err
 					}
 				}
@@ -360,7 +526,7 @@ func writeToTmpDir(tmpDir string, tfProject TerraformProject) (string, error) {
 			}
 		}
 
-		err = ioutil.WriteFile(fullPath, []byte(terraformFile.Contents), 0600)
+		err = os.WriteFile(fullPath, []byte(terraformFile.Contents), 0600)
 		if err != nil {
 			return tmpDir, err
 		}

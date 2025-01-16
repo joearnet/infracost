@@ -1,0 +1,9 @@
+Comment posted to GitHub
+
+Logs:
+INFO Estimate uploaded to Infracost Cloud
+INFO 1 guardrail checked
+INFO Creating new comment
+WARN {"body":"[//]: <> (infracost-comment, valid-at=REPLACED_TIME)\n<p><strong>✅ Guardrails passed</strong></p>"}
+
+INFO Created new comment: 

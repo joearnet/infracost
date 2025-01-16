@@ -2,13 +2,14 @@ package output
 
 import (
 	"fmt"
+	"math"
+
 	"github.com/Rhymond/go-money"
 	"github.com/dustin/go-humanize"
 	"github.com/shopspring/decimal"
-	"math"
 )
 
-var roundCostsAbove = 100
+var roundCostsAbove = 1
 
 func formatQuantity(q *decimal.Decimal) string {
 	if q == nil {
@@ -22,13 +23,24 @@ func formatCost(currency string, d *decimal.Decimal) string {
 	if d == nil {
 		return "-"
 	}
-	if d.GreaterThanOrEqual(decimal.NewFromInt(int64(roundCostsAbove))) {
+
+	if d.Abs().GreaterThanOrEqual(decimal.NewFromInt(int64(roundCostsAbove))) {
 		return formatWholeDecimalCurrency(currency, *d)
 	}
 	return formatRoundedDecimalCurrency(currency, *d)
 }
 
-func formatCost2DP(currency string, d *decimal.Decimal) string {
+func formatUsageCost(out Root, cost *decimal.Decimal) string {
+	hasUsageCosts := cost != nil && !cost.Equals(decimal.Zero)
+
+	if usageCostsEnabled(out) || hasUsageCosts {
+		return formatCost(out.Currency, cost)
+	} else {
+		return "-"
+	}
+}
+
+func FormatCost2DP(currency string, d *decimal.Decimal) string {
 	if d == nil {
 		return "-"
 	}
@@ -76,7 +88,7 @@ type scaledInt64 struct {
 // length of the fraction.
 func decimalToScaledInt(d decimal.Decimal, minFracLen, maxFracLen int) *scaledInt64 {
 	// round excess fraction part
-	d = d.Round(int32(maxFracLen))
+	d = d.Round(int32(maxFracLen)) // nolint:gosec
 
 	co := d.Coefficient().Int64()
 	ex := int(d.Exponent())
@@ -109,4 +121,52 @@ func formatTitleWithCurrency(title, currency string) string {
 		return title
 	}
 	return fmt.Sprintf("%s (%s)", title, currency)
+}
+
+func truncateMiddle(s string, maxLen int, fill string) string {
+	r := []rune(s)
+
+	if len(r) <= maxLen {
+		return s
+	}
+
+	fillR := []rune(fill)
+	fillLen := len(fillR)
+	if fillLen > maxLen {
+		return fill[0:maxLen]
+	}
+
+	startLen := int64(math.Ceil(0.5 * float64(maxLen-fillLen)))
+	endLen := int64(math.Floor(0.5 * float64(maxLen-fillLen)))
+
+	truncated := make([]rune, 0, maxLen)
+	truncated = append(truncated, r[0:startLen]...)
+	truncated = append(truncated, fillR...)
+	truncated = append(truncated, r[int64(len(r))-endLen:]...)
+
+	return string(truncated)
+}
+
+func showProject(p Project, opts Options, showError bool) bool {
+	if p.Metadata.HasErrors() && showError {
+		return true
+	}
+
+	if opts.ShowOnlyChanges {
+		// only return true if the project has code changes so the table can also show
+		// project that have cost changes.
+		if p.Metadata.VCSCodeChanged != nil && *p.Metadata.VCSCodeChanged {
+			return true
+		}
+	}
+
+	if opts.ShowAllProjects {
+		return true
+	}
+
+	if p.Diff == nil || !p.Diff.HasResources() {
+		return false
+	}
+
+	return true // has diff
 }

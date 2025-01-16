@@ -1,16 +1,17 @@
 package google
 
 import (
-	"github.com/infracost/infracost/internal/schema"
-	"github.com/shopspring/decimal"
-	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
+
+	"github.com/infracost/infracost/internal/logging"
+	"github.com/infracost/infracost/internal/resources/google"
+	"github.com/infracost/infracost/internal/schema"
 )
 
-func GetContainerNodePoolRegistryItem() *schema.RegistryItem {
+func getContainerNodePoolRegistryItem() *schema.RegistryItem {
 	return &schema.RegistryItem{
-		Name:  "google_container_node_pool",
-		RFunc: NewContainerNodePool,
+		Name:      "google_container_node_pool",
+		CoreRFunc: newContainerNodePool,
 		ReferenceAttributes: []string{
 			"cluster",
 		},
@@ -19,25 +20,48 @@ func GetContainerNodePoolRegistryItem() *schema.RegistryItem {
 			"Costs associated with non-standard Linux images, such as Windows and RHEL are not supported.",
 			"Custom machine types are not supported.",
 		},
+		GetRegion: func(defaultRegion string, d *schema.ResourceData) string {
+			var location string
+
+			var cluster *schema.ResourceData
+			if len(d.References("cluster")) > 0 {
+				cluster = d.References("cluster")[0]
+			}
+
+			if cluster != nil {
+				location = cluster.Get("location").String()
+			}
+
+			if d.Get("location").String() != "" {
+				location = d.Get("location").String()
+			}
+
+			region := location
+			if isZone(location) {
+				region = zoneToRegion(location)
+			}
+
+			return region
+		},
 	}
 }
 
-func NewContainerNodePool(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
+func newContainerNodePool(d *schema.ResourceData) schema.CoreResource {
 	var cluster *schema.ResourceData
 	if len(d.References("cluster")) > 0 {
 		cluster = d.References("cluster")[0]
 	}
 
-	var countPerZoneOverride *int64
-	if u != nil && u.Get("nodes").Exists() {
-		c := u.Get("nodes").Int()
-		countPerZoneOverride = &c
+	r := newNodePool(d.Address, d.RawValues, cluster)
+
+	if r == nil {
+		return nil
 	}
 
-	return newNodePool(d.Address, d.RawValues, countPerZoneOverride, cluster)
+	return r
 }
 
-func newNodePool(address string, d gjson.Result, countPerZoneOverride *int64, cluster *schema.ResourceData) *schema.Resource {
+func newNodePool(address string, d gjson.Result, cluster *schema.ResourceData) *google.ContainerNodePool {
 	var location string
 
 	if cluster != nil {
@@ -54,7 +78,7 @@ func newNodePool(address string, d gjson.Result, countPerZoneOverride *int64, cl
 	}
 
 	if region == "" {
-		log.Warnf("Skipping resource %s. Unable to determine region", address)
+		logging.Logger.Warn().Msgf("Skipping resource %s. Unable to determine region", address)
 		return nil
 	}
 
@@ -70,87 +94,25 @@ func newNodePool(address string, d gjson.Result, countPerZoneOverride *int64, cl
 
 	countPerZone := int64(3)
 
-	if d.Get("initial_node_count").Type != gjson.Null {
+	if d.Get("initial_node_count").Exists() {
 		countPerZone = d.Get("initial_node_count").Int()
 	}
 
-	if d.Get("node_count").Type != gjson.Null {
+	if d.Get("node_count").Exists() {
 		countPerZone = d.Get("node_count").Int()
 	}
 
-	if d.Get("autoscaling.0.min_node_count").Type != gjson.Null {
+	if d.Get("autoscaling.0.min_node_count").Exists() {
 		countPerZone = d.Get("autoscaling.0.min_node_count").Int()
 	}
 
-	if countPerZoneOverride != nil {
-		countPerZone = *countPerZoneOverride
+	containerNodeConfig := newContainerNodeConfig(d.Get("node_config.0"))
+
+	return &google.ContainerNodePool{
+		Address:      address,
+		Region:       region,
+		Zones:        zones,
+		CountPerZone: countPerZone,
+		NodeConfig:   containerNodeConfig,
 	}
-
-	nodeCount := decimal.NewFromInt(zones * countPerZone)
-
-	r := &schema.Resource{
-		Name:           address,
-		CostComponents: nodePoolCostComponents(region, d.Get("node_config.0")),
-	}
-
-	schema.MultiplyQuantities(r, nodeCount)
-
-	return r
-}
-
-func nodePoolCostComponents(region string, nodeConfig gjson.Result) []*schema.CostComponent {
-	poolSize := decimal.NewFromInt(1)
-	machineType := "e2-medium"
-	if nodeConfig.Get("machine_type").Exists() {
-		machineType = nodeConfig.Get("machine_type").String()
-	}
-
-	purchaseOption := "on_demand"
-	if nodeConfig.Get("preemptible").Bool() {
-		purchaseOption = "preemptible"
-	}
-
-	diskType := "pd-standard"
-	if nodeConfig.Get("disk_type").Exists() {
-		diskType = nodeConfig.Get("disk_type").String()
-	}
-
-	diskSize := decimal.NewFromInt(100)
-	if nodeConfig.Get("disk_size_gb").Exists() {
-		diskSize = decimal.NewFromInt(nodeConfig.Get("disk_size_gb").Int())
-	}
-
-	costComponents := []*schema.CostComponent{
-		computeCostComponent(region, machineType, purchaseOption, poolSize),
-		computeDisk(region, diskType, &diskSize, poolSize),
-	}
-
-	localSSDCount := nodeConfig.Get("local_ssd_count").Int()
-	if localSSDCount > 0 {
-		costComponents = append(costComponents, scratchDisk(region, purchaseOption, int(localSSDCount)))
-	}
-
-	for _, guestAccel := range nodeConfig.Get("guest_accelerator").Array() {
-		costComponents = append(costComponents, guestAccelerator(region, purchaseOption, guestAccel, poolSize))
-	}
-
-	return costComponents
-}
-
-func zoneCount(d gjson.Result, location string) int {
-	if location == "" {
-		location = d.Get("location").String()
-	}
-
-	c := 3
-
-	if isZone(location) {
-		c = 1
-	}
-
-	if len(d.Get("node_locations").Array()) > 0 {
-		c = len(d.Get("node_locations").Array())
-	}
-
-	return c
 }

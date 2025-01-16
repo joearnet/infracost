@@ -1,0 +1,187 @@
+
+<h4>💰 Infracost report</h4>
+<h4>Monthly estimate decreased by $2,241 📉</h4>
+<table>
+  <thead>
+    <td>Changed project</td>
+    <td>Module path</td>
+    <td>Workspace</td>
+    <td><span title="Baseline costs are consistent charges for provisioned resources, like the hourly cost for a virtual machine, which stays constant no matter how much it is used. Infracost estimates these resources assuming they are used for the whole month (730 hours).">Baseline cost</span></td>
+    <td><span title="Usage costs are charges based on actual usage, like the storage cost for an object storage bucket. Infracost estimates these resources using the monthly usage values in the usage-file.">Usage cost</span>*</td>
+    <td>Total change</td>
+    <td>New monthly cost</td>
+  </thead>
+  <tbody>
+    <tr>
+      <td>my terragrunt project</td>
+      <td>dev</td>
+      <td></td>
+      <td align="right">+$0.88</td>
+      <td align="right">-</td>
+      <td align="right">+$0.88 (+2%)</td>
+      <td align="right">$52</td>
+    </tr>
+    <tr>
+      <td>my terragrunt project</td>
+      <td>dev</td>
+      <td>ws2</td>
+      <td align="right">+$0.88</td>
+      <td align="right">-</td>
+      <td align="right">+$0.88 (+2%)</td>
+      <td align="right">$52</td>
+    </tr>
+    <tr>
+      <td>my terragrunt project</td>
+      <td>prod</td>
+      <td></td>
+      <td align="right">-$561</td>
+      <td align="right">-</td>
+      <td align="right">-$561 (-43%)</td>
+      <td align="right">$748</td>
+    </tr>
+    <tr>
+      <td>my terragrunt project</td>
+      <td>prod</td>
+      <td>ws2</td>
+      <td align="right">-$561</td>
+      <td align="right">-</td>
+      <td align="right">-$561 (-43%)</td>
+      <td align="right">$748</td>
+    </tr>
+    <tr>
+      <td>my tf project</td>
+      <td></td>
+      <td></td>
+      <td align="right">-$561</td>
+      <td align="right">-</td>
+      <td align="right">-$561 (-43%)</td>
+      <td align="right">$743</td>
+    </tr>
+    <tr>
+      <td>my tf project</td>
+      <td></td>
+      <td>my tf workspace</td>
+      <td align="right">-$561</td>
+      <td align="right">-</td>
+      <td align="right">-$561 (-43%)</td>
+      <td align="right">$743</td>
+    </tr>
+  </tbody>
+</table>
+
+
+*Usage costs can be estimated by updating [Infracost Cloud settings](https://www.infracost.io/docs/features/usage_based_resources), see [docs](https://www.infracost.io/docs/features/usage_based_resources/#infracost-usageyml) for other options.
+<details>
+
+<summary>Estimate details </summary>
+
+```
+Key: * usage cost, ~ changed, + added, - removed
+
+──────────────────────────────────
+Project: my terragrunt project
+Module path: dev
+
+~ aws_instance.web_app
+  +$0.88 ($51 → $52)
+
+    ~ Instance usage (Linux/UNIX, on-demand, t3.micro → t2.micro)
+      +$0.88 ($8 → $8)
+
+Monthly cost change for my terragrunt project (Module path: dev)
+Amount:  +$0.88 ($51 → $52)
+Percent: +2%
+
+──────────────────────────────────
+Project: my terragrunt project
+Module path: prod
+
+~ aws_instance.web_app
+  -$561 ($1,308 → $748)
+
+    ~ Instance usage (Linux/UNIX, on-demand, m5.8xlarge → m5.4xlarge)
+      -$561 ($1,121 → $561)
+
+Monthly cost change for my terragrunt project (Module path: prod)
+Amount:  -$561 ($1,308 → $748)
+Percent: -43%
+
+──────────────────────────────────
+Project: my terragrunt project
+Module path: dev
+Workspace: ws2
+
+~ aws_instance.web_app
+  +$0.88 ($51 → $52)
+
+    ~ Instance usage (Linux/UNIX, on-demand, t3.micro → t2.micro)
+      +$0.88 ($8 → $8)
+
+Monthly cost change for my terragrunt project (Module path: dev, Workspace: ws2)
+Amount:  +$0.88 ($51 → $52)
+Percent: +2%
+
+──────────────────────────────────
+Project: my terragrunt project
+Module path: prod
+Workspace: ws2
+
+~ aws_instance.web_app
+  -$561 ($1,308 → $748)
+
+    ~ Instance usage (Linux/UNIX, on-demand, m5.8xlarge → m5.4xlarge)
+      -$561 ($1,121 → $561)
+
+Monthly cost change for my terragrunt project (Module path: prod, Workspace: ws2)
+Amount:  -$561 ($1,308 → $748)
+Percent: -43%
+
+──────────────────────────────────
+Project: my tf project
+
+~ aws_instance.web_app
+  -$561 ($1,303 → $743)
+
+    ~ Instance usage (Linux/UNIX, on-demand, m5.8xlarge → m5.4xlarge)
+      -$561 ($1,121 → $561)
+
+Monthly cost change for my tf project
+Amount:  -$561 ($1,303 → $743)
+Percent: -43%
+
+──────────────────────────────────
+Project: my tf project
+Workspace: my tf workspace
+
+~ aws_instance.web_app
+  -$561 ($1,303 → $743)
+
+    ~ Instance usage (Linux/UNIX, on-demand, m5.8xlarge → m5.4xlarge)
+      -$561 ($1,121 → $561)
+
+Monthly cost change for my tf project (Workspace: my tf workspace)
+Amount:  -$561 ($1,303 → $743)
+Percent: -43%
+
+──────────────────────────────────
+Key: * usage cost, ~ changed, + added, - removed
+
+*Usage costs can be estimated by updating Infracost Cloud settings, see docs for other options.
+
+12 cloud resources were detected:
+∙ 12 were estimated
+
+Infracost estimate: Monthly estimate decreased by $2,241 ↓
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┓
+┃ Changed project                                    ┃ Baseline cost ┃ Usage cost* ┃ Total change ┃
+┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╋━━━━━━━━━━━━━━━╋━━━━━━━━━━━━━╋━━━━━━━━━━━━━━┫
+┃ my terragrunt project                              ┃        +$0.88 ┃           - ┃ +$0.88 (+2%) ┃
+┃ my terragrunt project                              ┃         -$561 ┃           - ┃ -$561 (-43%) ┃
+┃ my terragrunt project                              ┃        +$0.88 ┃           - ┃ +$0.88 (+2%) ┃
+┃ my terragrunt project                              ┃         -$561 ┃           - ┃ -$561 (-43%) ┃
+┃ my tf project                                      ┃         -$561 ┃           - ┃ -$561 (-43%) ┃
+┃ my tf project                                      ┃         -$561 ┃           - ┃ -$561 (-43%) ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┻━━━━━━━━━━━━━━━┻━━━━━━━━━━━━━┻━━━━━━━━━━━━━━┛
+```
+</details>
+

@@ -3,74 +3,47 @@ package google
 import (
 	"strings"
 
+	"github.com/infracost/infracost/internal/resources/google"
 	"github.com/infracost/infracost/internal/schema"
-	"github.com/shopspring/decimal"
 )
 
-func GetComputeDiskRegistryItem() *schema.RegistryItem {
+func getComputeDiskRegistryItem() *schema.RegistryItem {
 	return &schema.RegistryItem{
 		Name:                "google_compute_disk",
-		RFunc:               NewComputeDisk,
+		CoreRFunc:           newComputeDisk,
 		ReferenceAttributes: []string{"image", "snapshot"},
+		GetRegion: func(defaultRegion string, d *schema.ResourceData) string {
+			region := d.Get("region").String()
+
+			zone := d.Get("zone").String()
+			if zone != "" {
+				region = zoneToRegion(zone)
+			}
+
+			return region
+		},
 	}
 }
 
-func NewComputeDisk(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
-	region := d.Get("region").String()
-
-	zone := d.Get("zone").String()
-	if zone != "" {
-		region = zoneToRegion(zone)
-	}
-
+func newComputeDisk(d *schema.ResourceData) schema.CoreResource {
 	diskType := d.Get("type").String()
 	size := computeDiskSize(d)
 
-	return &schema.Resource{
-		Name: d.Address,
-		CostComponents: []*schema.CostComponent{
-			computeDisk(region, diskType, size, decimal.NewFromInt(1)),
-		},
+	iops := computeIOPS(d, diskType, size)
+
+	r := &google.ComputeDisk{
+		Address: d.Address,
+		Region:  d.Region,
+		Type:    diskType,
+		Size:    size,
+		IOPS:    iops,
 	}
+	return r
 }
 
-func computeDisk(region string, diskType string, size *decimal.Decimal, instanceCount decimal.Decimal) *schema.CostComponent {
-	diskTypeDesc := "/^Storage PD Capacity/"
-	diskTypeLabel := "Standard provisioned storage (pd-standard)"
-	switch diskType {
-	case "pd-balanced":
-		diskTypeDesc = "/^Balanced PD Capacity/"
-		diskTypeLabel = "Balanced provisioned storage (pd-balanced)"
-	case "pd-ssd":
-		diskTypeDesc = "/^SSD backed PD Capacity/"
-		diskTypeLabel = "SSD provisioned storage (pd-ssd)"
-	}
-
-	size = decimalPtr(instanceCount.Mul(*size))
-
-	return &schema.CostComponent{
-		Name:            diskTypeLabel,
-		Unit:            "GiB",
-		UnitMultiplier:  decimal.NewFromInt(1),
-		MonthlyQuantity: size,
-		ProductFilter: &schema.ProductFilter{
-			VendorName:    strPtr("gcp"),
-			Region:        strPtr(region),
-			Service:       strPtr("Compute Engine"),
-			ProductFamily: strPtr("Storage"),
-			AttributeFilters: []*schema.AttributeFilter{
-				{Key: "description", ValueRegex: strPtr(diskTypeDesc)},
-			},
-		},
-		PriceFilter: &schema.PriceFilter{
-			EndUsageAmount: strPtr(""), // use the non-free tier
-		},
-	}
-}
-
-func computeDiskSize(d *schema.ResourceData) *decimal.Decimal {
+func computeDiskSize(d *schema.ResourceData) float64 {
 	if d.Get("size").Exists() {
-		return decimalPtr(decimal.NewFromFloat(d.Get("size").Float()))
+		return d.Get("size").Float()
 	}
 
 	if len(d.References("image")) > 0 {
@@ -84,10 +57,74 @@ func computeDiskSize(d *schema.ResourceData) *decimal.Decimal {
 	return defaultDiskSize(d.Get("type").String())
 }
 
-func defaultDiskSize(diskType string) *decimal.Decimal {
+func defaultDiskSize(diskType string) float64 {
 	diskType = strings.ToLower(diskType)
 	if diskType == "pd-balanced" || diskType == "pd-ssd" {
-		return decimalPtr(decimal.NewFromInt(100))
+		return 100
 	}
-	return decimalPtr(decimal.NewFromInt(500))
+
+	if diskType == "pd-extreme" || diskType == "hyperdisk-extreme" {
+		return 1000
+	}
+
+	// if diskType is not specificed, default value is pd-standard
+	return 500
+}
+
+func computeImageDiskSize(d *schema.ResourceData) float64 {
+	if d.Get("disk_size_gb").Exists() {
+		return d.Get("disk_size_gb").Float()
+	}
+
+	if len(d.References("source_disk")) > 0 {
+		return computeDiskSize(d.References("source_disk")[0])
+	}
+
+	if len(d.References("source_image")) > 0 {
+		return computeImageDiskSize(d.References("source_image")[0])
+	}
+
+	if len(d.References("source_snapshot")) > 0 {
+		return computeSnapshotDiskSize(d.References("source_snapshot")[0])
+	}
+
+	return 0
+}
+
+func computeSnapshotDiskSize(d *schema.ResourceData) float64 {
+	if len(d.References("source_disk")) > 0 {
+		return computeDiskSize(d.References("source_disk")[0])
+	}
+
+	return 0
+}
+
+func computeIOPS(d *schema.ResourceData, diskType string, diskSize float64) int64 {
+	if diskType == "pd-extreme" || diskType == "hyperdisk-extreme" {
+
+		if d.Get("provisioned_iops").Exists() {
+			return d.Get("provisioned_iops").Int()
+		}
+
+		return defaultIOPS(diskType, diskSize)
+	}
+
+	return 0
+}
+
+func defaultIOPS(diskType string, diskSize float64) int64 {
+	if diskType == "pd-extreme" {
+		return 100000
+	}
+
+	if diskType == "hyperdisk-extreme" {
+
+		if iops := diskSize * 1200; iops < 350000 {
+			return int64(iops)
+		}
+
+		return 350000
+	}
+
+	return 0
 }

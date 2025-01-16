@@ -3,7 +3,6 @@ provider "aws" {
   skip_credentials_validation = true
   skip_metadata_api_check     = true
   skip_requesting_account_id  = true
-  skip_get_ec2_platforms      = true
   skip_region_validation      = true
   access_key                  = "mock_access_key"
   secret_key                  = "mock_secret_key"
@@ -34,6 +33,31 @@ resource "aws_autoscaling_group" "asg_lc_basic" {
   desired_capacity     = 2
   max_size             = 3
   min_size             = 1
+}
+
+resource "aws_autoscaling_group" "asg_lc_min_size" {
+  launch_configuration = aws_launch_configuration.lc_basic.id
+  max_size             = 3
+  min_size             = 2
+}
+
+resource "aws_autoscaling_group" "asg_lc_min_size_name_ref" {
+  launch_configuration = aws_launch_configuration.lc_basic.name
+  max_size             = 3
+  min_size             = 2
+}
+
+resource "aws_autoscaling_group" "asg_lc_min_size_zero" {
+  launch_configuration = aws_launch_configuration.lc_basic.id
+  max_size             = 3
+  min_size             = 0
+}
+
+resource "aws_autoscaling_group" "asg_lc_desired_capacity_zero" {
+  launch_configuration = aws_launch_configuration.lc_basic.id
+  desired_capacity     = 0
+  max_size             = 3
+  min_size             = 0
 }
 
 resource "aws_launch_configuration" "lc_ebs_optimized" {
@@ -177,6 +201,31 @@ resource "aws_autoscaling_group" "asg_lt_basic" {
   desired_capacity = 2
   max_size         = 3
   min_size         = 1
+}
+
+resource "aws_autoscaling_group" "asg_lt_min_size" {
+  launch_template {
+    id = aws_launch_template.lt_basic.id
+  }
+  max_size = 3
+  min_size = 2
+}
+
+resource "aws_autoscaling_group" "asg_lt_min_size_zero" {
+  launch_template {
+    id = aws_launch_template.lt_basic.id
+  }
+  max_size = 3
+  min_size = 0
+}
+
+resource "aws_autoscaling_group" "asg_lt_desired_capacity_zero" {
+  launch_template {
+    id = aws_launch_template.lt_basic.id
+  }
+  desired_capacity = 0
+  max_size         = 3
+  min_size         = 0
 }
 
 resource "aws_launch_template" "lt_tenancy_dedicated" {
@@ -375,4 +424,44 @@ resource "aws_autoscaling_group" "asg_mixed_instance_dynamic" {
       on_demand_percentage_above_base_capacity = 100
     }
   }
+}
+
+module "asg-lt" {
+  source                 = "terraform-aws-modules/autoscaling/aws"
+  version                = "~> 5"
+  name                   = "asg"
+  create_launch_template = true
+  launch_template_name   = "lt"
+  image_id               = "ami-0ff8a91507f77f867"
+  instance_type          = "t3.micro"
+  min_size               = 0
+  max_size               = 2
+  desired_capacity       = 1
+  block_device_mappings = [
+    {
+      device_name = "/dev/xvdf"
+      ebs = {
+        volume_size = 10
+      }
+    }
+  ]
+}
+
+
+locals {
+  instance_types = ["t2.micro", "t2.medium"]
+}
+
+resource "aws_autoscaling_group" "test_count" {
+  count                = 2
+  desired_capacity     = 2
+  max_size             = 3
+  min_size             = 1
+  launch_configuration = aws_launch_configuration.test_count.*.id[count.index]
+}
+
+resource "aws_launch_configuration" "test_count" {
+  count         = 2
+  image_id      = "fake_ami"
+  instance_type = local.instance_types[count.index]
 }

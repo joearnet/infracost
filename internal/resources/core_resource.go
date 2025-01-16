@@ -1,21 +1,19 @@
 package resources
 
 import (
-	log "github.com/sirupsen/logrus"
 	"reflect"
 	"strings"
 
+	"github.com/infracost/infracost/internal/logging"
 	"github.com/infracost/infracost/internal/schema"
 )
-
-type CoreResource interface {
-	PopulateUsage(u *schema.UsageData)
-}
 
 // Dummy variables for type checking
 var intPtr *int64
 var floatPtr *float64
 var strPtr *string
+var strType = reflect.TypeOf("")
+var float64Type = reflect.TypeOf(float64(0))
 
 func PopulateArgsWithUsage(args interface{}, u *schema.UsageData) {
 	if u == nil {
@@ -47,19 +45,53 @@ func PopulateArgsWithUsage(args interface{}, u *schema.UsageData) {
 		}
 		// Key name for the usage file
 		usageKey := infracostTagSplitted[0]
+		if usageKey == "" {
+			continue
+		}
 
 		// Check whether a value for this arg was specified in the usage data.
 		if u.Get(usageKey).Exists() {
 			// Set the value of the arg to the value specified in the usage data.
 			if f.Type() == reflect.TypeOf(floatPtr) {
 				f.Set(reflect.ValueOf(u.GetFloat(usageKey)))
-			} else if f.Type() == reflect.TypeOf(intPtr) {
-				f.Set(reflect.ValueOf(u.GetInt(usageKey)))
-			} else if f.Type() == reflect.TypeOf(strPtr) {
-				f.Set(reflect.ValueOf(u.GetString(usageKey)))
-			} else {
-				log.Errorf("Unsupported field { UsageKey: %s, Type: %v }", usageKey, f.Type())
+				continue
 			}
+
+			if f.Type() == reflect.TypeOf(intPtr) {
+				f.Set(reflect.ValueOf(u.GetInt(usageKey)))
+				continue
+			}
+
+			if f.Type() == reflect.TypeOf(strPtr) {
+				f.Set(reflect.ValueOf(u.GetString(usageKey)))
+				continue
+			}
+
+			if f.Type().Elem().Kind() == reflect.Struct {
+				if f.IsNil() {
+					f.Set(reflect.New(f.Type().Elem()))
+				}
+
+				PopulateArgsWithUsage(f.Interface(), &schema.UsageData{
+					Address:    usageKey,
+					Attributes: u.Get(usageKey).Map(),
+				})
+
+				continue
+			}
+
+			if f.Type() == reflect.MapOf(strType, float64Type) {
+				m := make(map[string]float64)
+				for k, v := range u.Get(usageKey).Map() {
+					m[k] = v.Float()
+				}
+
+				f.Set(reflect.ValueOf(m))
+
+				continue
+			}
+
+			logging.Logger.Error().Msgf("Unsupported field { UsageKey: %s, Type: %v }", usageKey, f.Type())
 		}
 	}
 }

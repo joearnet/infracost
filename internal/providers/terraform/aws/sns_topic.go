@@ -1,51 +1,32 @@
 package aws
 
 import (
+	"github.com/infracost/infracost/internal/resources/aws"
 	"github.com/infracost/infracost/internal/schema"
-
-	"github.com/shopspring/decimal"
 )
 
-func GetSNSTopicRegistryItem() *schema.RegistryItem {
+func getSNSTopicRegistryItem() *schema.RegistryItem {
 	return &schema.RegistryItem{
-		Name:  "aws_sns_topic",
-		RFunc: NewSnsTopic,
+		Name:                "aws_sns_topic",
+		CoreRFunc:           NewSNSTopic,
+		ReferenceAttributes: []string{"aws_sns_topic_subscription.topic_arn"},
 	}
 }
 
-func NewSnsTopic(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
-	region := d.Get("region").String()
+func NewSNSTopic(d *schema.ResourceData) schema.CoreResource {
+	if d.GetBoolOrDefault("fifo_topic", false) {
+		r := &aws.SNSFIFOTopic{
+			Address:       d.Address,
+			Region:        d.Get("region").String(),
+			Subscriptions: int64(len(d.References("aws_sns_topic_subscription.topic_arn"))),
+		}
 
-	requestSize := decimal.NewFromInt(64)
-	if u != nil && u.Get("request_size_kb").Exists() {
-		requestSize = decimal.NewFromFloat(u.Get("request_size_kb").Float())
+		return r
 	}
 
-	var requests *decimal.Decimal
-
-	if u != nil && u.Get("monthly_requests").Exists() {
-		monthlyRequests := decimal.NewFromInt(u.Get("monthly_requests").Int())
-		requests = decimalPtr(calculateRequests(requestSize, monthlyRequests))
+	r := &aws.SNSTopic{
+		Address: d.Address,
+		Region:  d.Get("region").String(),
 	}
-
-	return &schema.Resource{
-		Name: d.Address,
-		CostComponents: []*schema.CostComponent{
-			{
-				Name:            "Requests",
-				Unit:            "1M requests",
-				UnitMultiplier:  decimal.NewFromInt(1000000),
-				MonthlyQuantity: requests,
-				ProductFilter: &schema.ProductFilter{
-					VendorName:    strPtr("aws"),
-					Region:        strPtr(region),
-					Service:       strPtr("AmazonSNS"),
-					ProductFamily: strPtr("API Request"),
-				},
-				PriceFilter: &schema.PriceFilter{
-					StartUsageAmount: strPtr("1000000"),
-				},
-			},
-		},
-	}
+	return r
 }

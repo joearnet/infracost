@@ -1,51 +1,39 @@
 package aws
 
 import (
+	"github.com/infracost/infracost/internal/resources/aws"
 	"github.com/infracost/infracost/internal/schema"
-	"github.com/shopspring/decimal"
 )
 
-func GetEIPRegistryItem() *schema.RegistryItem {
+var (
+	eipReferences = []string{
+		"aws_nat_gateway.allocation_id",
+		"aws_eip_association.allocation_id",
+		"aws_lb.subnet_mapping.#.allocation_id",
+	}
+)
+
+func getEIPRegistryItem() *schema.RegistryItem {
 	return &schema.RegistryItem{
-		Name:  "aws_eip",
-		RFunc: NewEIP,
+		Name:                "aws_eip",
+		ReferenceAttributes: eipReferences,
+		CoreRFunc:           NewEIP,
 	}
 }
-
-func NewEIP(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
-	// The IP address is probably used if it has an instance or network_interface, the instance might
-	// be stopped but that's probably less likely
-	if (d.Get("customer_owned_ipv4_pool").Exists() && d.Get("customer_owned_ipv4_pool").String() != "") ||
-		d.Get("instance").Exists() || d.Get("network_interface").Exists() {
-		return &schema.Resource{
-			NoPrice:   true,
-			IsSkipped: true,
-		}
+func NewEIP(d *schema.ResourceData) schema.CoreResource {
+	var allocated bool
+	if len(d.References(eipReferences...)) > 0 {
+		allocated = true
 	}
 
-	region := d.Get("region").String()
-
-	return &schema.Resource{
-		Name: d.Address,
-		CostComponents: []*schema.CostComponent{
-			{
-				Name:           "IP address (if unused)",
-				Unit:           "hours",
-				UnitMultiplier: decimal.NewFromInt(1),
-				HourlyQuantity: decimalPtr(decimal.NewFromInt(1)),
-				ProductFilter: &schema.ProductFilter{
-					VendorName:    strPtr("aws"),
-					Region:        strPtr(region),
-					Service:       strPtr("AmazonEC2"),
-					ProductFamily: strPtr("IP Address"),
-					AttributeFilters: []*schema.AttributeFilter{
-						{Key: "usagetype", ValueRegex: strPtr("/ElasticIP:IdleAddress/")},
-					},
-				},
-				PriceFilter: &schema.PriceFilter{
-					StartUsageAmount: strPtr("1"),
-				},
-			},
-		},
+	if !d.IsEmpty("customer_owned_ipv4_pool") || !d.IsEmpty("instance") || !d.IsEmpty("network_interface") {
+		allocated = true
 	}
+
+	r := &aws.EIP{
+		Address:   d.Address,
+		Region:    d.Get("region").String(),
+		Allocated: allocated,
+	}
+	return r
 }

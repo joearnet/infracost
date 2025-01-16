@@ -1,289 +1,304 @@
 package usage
 
 import (
-	"context"
+	"bytes"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"sort"
 	"strings"
 
-	"github.com/infracost/infracost"
-	"github.com/infracost/infracost/internal/schema"
+	"github.com/infracost/infracost/internal/metrics"
 	"github.com/pkg/errors"
-	log "github.com/sirupsen/logrus"
 	"golang.org/x/mod/semver"
-	"gopkg.in/yaml.v2"
+	yamlv3 "gopkg.in/yaml.v3"
+
+	"github.com/infracost/infracost/internal/logging"
+	"github.com/infracost/infracost/internal/schema"
 )
 
 const minUsageFileVersion = "0.1"
 const maxUsageFileVersion = "0.1"
 
 type UsageFile struct { // nolint:revive
-	Version       string                 `yaml:"version"`
-	ResourceUsage map[string]interface{} `yaml:"resource_usage"`
+	Version string `yaml:"version"`
+	// We represent resource type usage in using a YAML node so we have control over the comments
+	RawResourceTypeUsage yamlv3.Node `yaml:"resource_type_default_usage"`
+	// The raw usage is then parsed into this struct
+	ResourceTypeUsages []*ResourceUsage `yaml:"-"`
+	// We represent resource usage in using a YAML node so we have control over the comments
+	RawResourceUsage yamlv3.Node `yaml:"resource_usage"`
+	// The raw usage is then parsed into this struct
+	ResourceUsages []*ResourceUsage `yaml:"-"`
 }
 
-type SchemaItem struct {
-	Key          string
-	ValueType    schema.UsageVariableType
-	DefaultValue interface{}
-}
+// CreateUsageFile creates a blank usage file if it does not exists
+func CreateUsageFile(path string) error {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
 
-type SyncResult struct {
-	ResourceCount    int
-	EstimationCount  int
-	EstimationErrors map[string]error
-}
+		usageFile := NewBlankUsageFile()
 
-func SyncUsageData(projects []*schema.Project, existingUsageData map[string]*schema.UsageData, usageFilePath string) (*SyncResult, error) {
-	if usageFilePath == "" {
-		return nil, nil
+		err = usageFile.WriteToPath(path)
+		if err != nil {
+			return errors.Wrapf(err, "Error writing blank usage file to %s", path)
+		}
+	} else {
+		logging.Logger.Debug().Msg("Specified usage file already exists, no overriding")
 	}
-	usageSchema, err := loadUsageSchema()
+
+	return nil
+}
+
+func LoadUsageFile(path string) (*UsageFile, error) {
+	loadUsageTimer := metrics.GetTimer("parallel_runner.load_usage.duration", false, path).Start()
+	defer loadUsageTimer.Stop()
+	blankUsage := NewBlankUsageFile()
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		logging.Logger.Debug().Msg("Specified usage file does not exist. Using a blank file")
+
+		return blankUsage, nil
+	}
+
+	contents, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return blankUsage, errors.Wrapf(err, "Error reading usage file")
 	}
 
-	// TODO: update this when we properly support multiple projects in usage
-	resources := make([]*schema.Resource, 0)
-	for _, project := range projects {
-		resources = append(resources, project.Resources...)
-	}
-
-	syncResult, syncedResourcesUsage := syncResourcesUsage(resources, usageSchema, existingUsageData)
-	// yaml.MapSlice is used to maintain the order of keys, so re-running
-	// the code won't change the output.
-	syncedUsageData := yaml.MapSlice{
-		{Key: "version", Value: 0.1},
-		{Key: "resource_usage", Value: syncedResourcesUsage},
-	}
-	d, err := yaml.Marshal(syncedUsageData)
+	usageFile, err := LoadUsageFileFromString(string(contents))
 	if err != nil {
-		return nil, err
+		return blankUsage, errors.Wrapf(err, "Error loading usage file")
 	}
-	err = ioutil.WriteFile(usageFilePath, d, 0600)
+
+	return usageFile, nil
+}
+
+func NewBlankUsageFile() *UsageFile {
+	usageFile := &UsageFile{
+		Version: maxUsageFileVersion,
+		RawResourceTypeUsage: yamlv3.Node{
+			Kind: yamlv3.MappingNode,
+		},
+		RawResourceUsage: yamlv3.Node{
+			Kind: yamlv3.MappingNode,
+		},
+	}
+
+	return usageFile
+}
+
+func LoadUsageFileFromString(s string) (*UsageFile, error) {
+	usageFile := &UsageFile{}
+
+	err := yamlv3.Unmarshal([]byte(s), usageFile)
 	if err != nil {
-		return nil, err
+		return usageFile, errors.Wrap(err, "Error parsing usage YAML")
 	}
-	return &syncResult, nil
-}
 
-func syncResourcesUsage(resources []*schema.Resource, usageSchema map[string][]*SchemaItem, existingUsageData map[string]*schema.UsageData) (SyncResult, yaml.MapSlice) {
-	syncResult := SyncResult{EstimationErrors: make(map[string]error)}
-	syncedResourceUsage := make(map[string]interface{})
-	for _, resource := range resources {
-		resourceName := resource.Name
-		resourceUSchema := resource.UsageSchema
-		if resource.UsageSchema == nil {
-			// There is no explicitly defined UsageSchema for this resource.  Use the old way and create one from
-			// infracost-usage-example.yml.
-			resourceTypeNames := strings.Split(resourceName, ".")
-			if len(resourceTypeNames) < 2 {
-				// It's a resource with no name
-				continue
-			}
-			// This handles module names appearing in the resourceName too
-			resourceTypeName := resourceTypeNames[len(resourceTypeNames)-2]
-			schemaItems, ok := usageSchema[resourceTypeName]
-			if !ok {
-				continue
-			}
-
-			resourceUSchema = make([]*schema.UsageSchemaItem, 0, len(schemaItems))
-			for _, s := range schemaItems {
-				resourceUSchema = append(resourceUSchema, &schema.UsageSchemaItem{
-					Key:          s.Key,
-					DefaultValue: s.DefaultValue,
-					ValueType:    s.ValueType,
-				})
-			}
-		}
-
-		resourceUsage := make(map[string]interface{})
-		for _, usageSchemaItem := range resourceUSchema {
-			usageKey := usageSchemaItem.Key
-			usageValueType := usageSchemaItem.ValueType
-			var existingUsageValue interface{}
-			if existingUsage, ok := existingUsageData[resourceName]; ok {
-				switch usageValueType {
-				case schema.Float64:
-					if v := existingUsage.GetFloat(usageKey); v != nil {
-						existingUsageValue = *v
-					}
-				case schema.Int64:
-					if v := existingUsage.GetInt(usageKey); v != nil {
-						existingUsageValue = *v
-					}
-				case schema.String:
-					if v := existingUsage.GetString(usageKey); v != nil {
-						existingUsageValue = *v
-					}
-				case schema.StringArray:
-					if v := existingUsage.GetStringArray(usageKey); v != nil {
-						existingUsageValue = *v
-					}
-				}
-			}
-			if existingUsageValue != nil {
-				resourceUsage[usageKey] = existingUsageValue
-			} else {
-				resourceUsage[usageKey] = usageSchemaItem.DefaultValue
-			}
-		}
-		syncResult.ResourceCount++
-		if resource.EstimateUsage != nil {
-			syncResult.EstimationCount++
-			err := resource.EstimateUsage(context.TODO(), resourceUsage)
-			if err != nil {
-				syncResult.EstimationErrors[resourceName] = err
-				log.Warnf("Error estimating usage for resource %s: %v", resourceName, err)
-			}
-		}
-		syncedResourceUsage[resourceName] = unFlattenHelper(resourceUsage)
+	if !usageFile.checkVersion() {
+		return usageFile, fmt.Errorf("Invalid usage file version. Supported versions are %s ≤ x ≤ %s", minUsageFileVersion, maxUsageFileVersion)
 	}
-	// yaml.MapSlice is used to maintain the order of keys, so re-running
-	// the code won't change the output.
-	result := mapToSortedMapSlice(syncedResourceUsage)
-	return syncResult, result
-}
 
-func loadUsageSchema() (map[string][]*SchemaItem, error) {
-	usageSchema := make(map[string][]*SchemaItem)
-	usageData, err := loadReferenceFile()
+	err = usageFile.parseResourceUsages()
 	if err != nil {
-		return usageSchema, err
+		return usageFile, errors.Wrap(err, "Error loading YAML file")
 	}
-	for _, resUsageData := range usageData {
-		resourceTypeName := strings.Split(resUsageData.Address, ".")[0]
-		usageSchema[resourceTypeName] = make([]*SchemaItem, 0)
-		for usageKeyName, usageRawResult := range resUsageData.Attributes {
-			var defaultValue interface{}
-			usageValueType := schema.Int64
-			defaultValue = 0
-			usageRawValue := usageRawResult.Value()
-			if _, ok := usageRawValue.(string); ok {
-				usageValueType = schema.String
-				defaultValue = usageRawResult.String()
-			}
-			usageSchema[resourceTypeName] = append(usageSchema[resourceTypeName], &SchemaItem{
-				Key:          usageKeyName,
-				ValueType:    usageValueType,
-				DefaultValue: defaultValue,
-			})
-		}
-	}
-	return usageSchema, nil
+
+	return usageFile, nil
 }
 
-func unFlattenHelper(input map[string]interface{}) map[string]interface{} {
-	result := make(map[string]interface{})
-	for k, v := range input {
-		rootMap := &result
-		splittedKey := strings.Split(k, ".")
-		for it := 0; it < len(splittedKey)-1; it++ {
-			key := splittedKey[it]
-			if _, ok := (*rootMap)[key]; !ok {
-				(*rootMap)[key] = make(map[string]interface{})
-			}
-			casted := (*rootMap)[key].(map[string]interface{})
-			rootMap = &casted
-		}
-		key := splittedKey[len(splittedKey)-1]
-		(*rootMap)[key] = v
-	}
-	return result
-}
+func (u *UsageFile) WriteToPath(path string) error {
+	allResourceTypesCommented, allResourcesCommented := u.dumpResourceUsages()
 
-func mapToSortedMapSlice(input map[string]interface{}) yaml.MapSlice {
-	result := make(yaml.MapSlice, 0)
-	// sort keys of the input to maintain same output for different runs.
-	keys := make([]string, 0)
-	for k := range input {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	// Iterate over sorted keys
-	for _, k := range keys {
-		v := input[k]
-		if casted, ok := v.(map[string]interface{}); ok {
-			result = append(result, yaml.MapItem{Key: k, Value: mapToSortedMapSlice(casted)})
-		} else {
-			result = append(result, yaml.MapItem{Key: k, Value: v})
-		}
-	}
-	return result
-}
-
-func loadReferenceFile() (map[string]*schema.UsageData, error) {
-	referenceUsageFileContents := infracost.GetReferenceUsageFileContents()
-	usageData, err := parseYAML(*referenceUsageFileContents)
-	if err != nil {
-		return usageData, errors.Wrapf(err, "Error parsing usage file")
-	}
-	return usageData, nil
-}
-
-func LoadFromFile(usageFilePath string, createIfNotExisting bool) (map[string]*schema.UsageData, error) {
-	usageData := make(map[string]*schema.UsageData)
-
-	if usageFilePath == "" {
-		return usageData, nil
+	root := &yamlv3.Node{
+		Kind: yamlv3.MappingNode,
+		HeadComment: `You can use this file to define resource usage estimates for Infracost to use when calculating
+the cost of usage-based resource, such as AWS S3 or Lambda.
+` + "`infracost breakdown --usage-file infracost-usage.yml [other flags]`" + `
+See https://infracost.io/usage-file/ for docs`,
 	}
 
-	if createIfNotExisting {
-		if _, err := os.Stat(usageFilePath); os.IsNotExist(err) {
-			log.Debug("Specified usage file does not exist. It will be created")
-			fileContent := yaml.MapSlice{
-				{Key: "version", Value: "0.1"},
-				{Key: "resource_usage", Value: make(map[string]interface{})},
-			}
-			d, err := yaml.Marshal(fileContent)
-			if err != nil {
-				return usageData, errors.Wrapf(err, "Error creating usage file")
-			}
-			err = ioutil.WriteFile(usageFilePath, d, 0600)
-			if err != nil {
-				return usageData, errors.Wrapf(err, "Error creating usage file")
-			}
+	resourceTypeUsagesKeyNode := &yamlv3.Node{
+		Kind:  yamlv3.ScalarNode,
+		Value: "resource_type_default_usage",
+	}
+	resourceUsagesKeyNode := &yamlv3.Node{
+		Kind:  yamlv3.ScalarNode,
+		Value: "resource_usage",
+	}
+
+	if allResourceTypesCommented {
+		markNodeAsComment(resourceTypeUsagesKeyNode)
+	}
+	if allResourcesCommented {
+		markNodeAsComment(resourceUsagesKeyNode)
+	}
+
+	root.Content = append(root.Content,
+		&yamlv3.Node{
+			Kind:  yamlv3.ScalarNode,
+			Value: "version",
+		},
+		&yamlv3.Node{
+			Kind:  yamlv3.ScalarNode,
+			Value: u.Version,
+		},
+		resourceTypeUsagesKeyNode,
+		&u.RawResourceTypeUsage,
+		resourceUsagesKeyNode,
+		&u.RawResourceUsage,
+	)
+
+	// Add a comment to the first commented-out resource
+	for _, node := range u.RawResourceTypeUsage.Content {
+		if isNodeMarkedAsCommented(node) {
+			node.HeadComment = `##
+## The following usage values apply to each resource of the given type, which is useful when you want to define defaults.
+## All values are commented-out, you can uncomment resource types and customize as needed.
+##`
+			break
 		}
 	}
 
-	log.Debug("Loading usage data from usage file")
-
-	out, err := ioutil.ReadFile(usageFilePath)
-	if err != nil {
-		return usageData, errors.Wrapf(err, "Error reading usage file")
+	// Add a comment to the first commented-out resource
+	for _, node := range u.RawResourceUsage.Content {
+		if isNodeMarkedAsCommented(node) {
+			node.HeadComment = `##
+## The following usage values apply to individual resources and override any value defined in the resource_type_default_usage section.
+## All values are commented-out, you can uncomment resources and customize as needed.
+##`
+			break
+		}
 	}
 
-	usageData, err = parseYAML(out)
+	var buf bytes.Buffer
+	yamlEncoder := yamlv3.NewEncoder(&buf)
+	yamlEncoder.SetIndent(2)
+	err := yamlEncoder.Encode(root)
 	if err != nil {
-		return usageData, errors.Wrapf(err, "Error parsing usage file")
+		return err
 	}
 
-	return usageData, nil
+	b := buf.Bytes()
+	// If all the resources are commented then we also want to comment the resource_usage key
+	b = replaceCommentMarks(b)
+
+	return os.WriteFile(path, b, 0600)
 }
 
-func parseYAML(y []byte) (map[string]*schema.UsageData, error) {
-	var usageFile UsageFile
+func (u *UsageFile) ToUsageDataMap() schema.UsageMap {
+	m := make(map[string]interface{})
 
-	err := yaml.Unmarshal(y, &usageFile)
-	if err != nil {
-		return map[string]*schema.UsageData{}, errors.Wrap(err, "Error parsing usage YAML")
+	for _, resourceUsage := range u.ResourceTypeUsages {
+		m[resourceUsage.Name] = resourceUsage.Map()
 	}
 
-	if !checkVersion(usageFile.Version) {
-		return map[string]*schema.UsageData{}, fmt.Errorf("Invalid usage file version. Supported versions are %s ≤ x ≤ %s", minUsageFileVersion, maxUsageFileVersion)
+	for _, resourceUsage := range u.ResourceUsages {
+		m[resourceUsage.Name] = resourceUsage.Map()
 	}
 
-	usageMap := schema.NewUsageMap(usageFile.ResourceUsage)
-
-	return usageMap, nil
+	return schema.NewUsageMapFromInterface(m)
 }
 
-func checkVersion(v string) bool {
-	if !strings.HasPrefix(v, "v") {
-		v = "v" + v
+func (u *UsageFile) checkVersion() bool {
+	v := u.Version
+	if !strings.HasPrefix(u.Version, "v") {
+		v = "v" + u.Version
 	}
 	return semver.Compare(v, "v"+minUsageFileVersion) >= 0 && semver.Compare(v, "v"+maxUsageFileVersion) <= 0
+}
+
+// InvalidKeys returns a list of keys that are invalid in the usage file.
+// It currently checks the reference usage file for a list of valid keys.
+// In the future we will want this to usage the resource usage schema structs as well.
+func (u *UsageFile) InvalidKeys() ([]string, error) {
+	invalidKeys := make([]string, 0)
+
+	refFile, err := LoadReferenceFile()
+	if err != nil {
+		return invalidKeys, err
+	}
+
+	for _, resourceUsage := range u.ResourceUsages {
+		refResourceUsage := refFile.FindMatchingResourceUsage(resourceUsage.Name)
+		if refResourceUsage == nil {
+			continue
+		}
+		refItemMap := refResourceUsage.Map()
+
+		// Iterate over provided keys and check if they are
+		// present in the reference usage file
+		for _, item := range resourceUsage.Items {
+			invalidKeys = append(invalidKeys, findInvalidKeys(item, refItemMap)...)
+		}
+	}
+
+	for _, resourceUsage := range u.ResourceTypeUsages {
+		refResourceUsage := refFile.FindMatchingResourceTypeUsage(resourceUsage.Name)
+		if refResourceUsage == nil {
+			continue
+		}
+
+		refItemMap := refResourceUsage.Map()
+
+		// Iterate over provided keys and check if they are
+		// present in the reference usage file
+		for _, item := range resourceUsage.Items {
+			invalidKeys = append(invalidKeys, findInvalidKeys(item, refItemMap)...)
+		}
+	}
+
+	// Remove duplicate entries
+	invalidKeys = removeDuplicateStr(invalidKeys)
+
+	// Sort the keys alphabetically
+	sort.Strings(invalidKeys)
+
+	return invalidKeys, nil
+}
+
+func removeDuplicateStr(strSlice []string) []string {
+	allKeys := make(map[string]bool)
+	list := []string{}
+	for _, item := range strSlice {
+		if _, value := allKeys[item]; !value {
+			allKeys[item] = true
+			list = append(list, item)
+		}
+	}
+	return list
+}
+
+// findInvalidKeys recursively searches for invalid keys in the provided item
+func findInvalidKeys(item *schema.UsageItem, refMap map[string]interface{}) []string {
+	invalidKeys := make([]string, 0)
+
+	if refVal, ok := refMap[item.Key]; !ok {
+		invalidKeys = append(invalidKeys, item.Key)
+	} else if item.ValueType == schema.SubResourceUsage && item.Value != nil {
+		for _, subItem := range item.Value.(*ResourceUsage).Items {
+			invalidKeys = append(invalidKeys, findInvalidKeys(subItem, refVal.(map[string]interface{}))...)
+		}
+	}
+
+	return invalidKeys
+}
+
+func (u *UsageFile) parseResourceUsages() error {
+	var err error
+	u.ResourceUsages, err = ResourceUsagesFromYAML(u.RawResourceUsage)
+	if err != nil {
+		return errors.Wrapf(err, "Error parsing usage file")
+	}
+	u.ResourceTypeUsages, err = ResourceUsagesFromYAML(u.RawResourceTypeUsage)
+	if err != nil {
+		return errors.Wrapf(err, "Error parsing usage file")
+	}
+	return nil
+}
+
+func (u *UsageFile) dumpResourceUsages() (bool, bool) {
+	var allResourceTypesCommented bool
+	var allResourcesCommented bool
+	u.RawResourceTypeUsage, allResourceTypesCommented = ResourceUsagesToYAML(u.ResourceTypeUsages)
+	u.RawResourceUsage, allResourcesCommented = ResourceUsagesToYAML(u.ResourceUsages)
+	return allResourceTypesCommented, allResourcesCommented
 }

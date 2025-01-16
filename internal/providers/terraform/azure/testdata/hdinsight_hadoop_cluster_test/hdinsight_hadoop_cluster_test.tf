@@ -9,11 +9,12 @@ resource "azurerm_resource_group" "example" {
 }
 
 resource "azurerm_storage_account" "example" {
-  name                     = "hdinsightstor"
+  name                     = "ichdinsightstor"
   resource_group_name      = azurerm_resource_group.example.name
   location                 = azurerm_resource_group.example.location
   account_tier             = "Standard"
   account_replication_type = "LRS"
+  access_tier              = "Cool"
 }
 
 resource "azurerm_storage_container" "example" {
@@ -34,7 +35,6 @@ resource "azurerm_hdinsight_hadoop_cluster" "with_edge" {
   }
 
   gateway {
-    enabled  = true
     username = "acctestusrgw"
     password = "TerrAform123!"
   }
@@ -88,7 +88,6 @@ resource "azurerm_hdinsight_hadoop_cluster" "without_edge" {
   }
 
   gateway {
-    enabled  = true
     username = "acctestusrgw"
     password = "TerrAform123!"
   }

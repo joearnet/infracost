@@ -4,10 +4,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/infracost/infracost/internal/schema"
-	"github.com/infracost/infracost/internal/usage"
 	"github.com/shopspring/decimal"
 	"github.com/tidwall/gjson"
+
+	"github.com/infracost/infracost/internal/schema"
+	"github.com/infracost/infracost/internal/usage"
 )
 
 func GetAzureRMNotificationHubNamespaceRegistryItem() *schema.RegistryItem {
@@ -18,7 +19,7 @@ func GetAzureRMNotificationHubNamespaceRegistryItem() *schema.RegistryItem {
 }
 
 func NewAzureRMNotificationHubNamespace(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
-	region := lookupRegion(d, []string{})
+	region := d.Region
 
 	var monthlyAdditionalPushes *decimal.Decimal
 	sku := "Basic"
@@ -28,6 +29,7 @@ func NewAzureRMNotificationHubNamespace(d *schema.ResourceData, u *schema.UsageD
 	}
 	if strings.ToLower(sku) == "free" {
 		return &schema.Resource{
+			Name:      d.Address,
 			NoPrice:   true,
 			IsSkipped: true,
 		}

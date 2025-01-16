@@ -1,8 +1,8 @@
 package azure
 
 import (
+	"github.com/infracost/infracost/internal/logging"
 	"github.com/infracost/infracost/internal/schema"
-	log "github.com/sirupsen/logrus"
 )
 
 func GetAzureRMCosmosdbCassandraTableRegistryItem() *schema.RegistryItem {
@@ -26,9 +26,9 @@ func NewAzureRMCosmosdbCassandraTable(d *schema.ResourceData, u *schema.UsageDat
 				CostComponents: cosmosDBCostComponents(d, u, account),
 			}
 		}
-		log.Warnf("Skipping resource %s as its 'cassandra_keyspace_id.account_name' property could not be found.", d.Address)
+		logging.Logger.Warn().Msgf("Skipping resource %s as its 'cassandra_keyspace_id.account_name' property could not be found.", d.Address)
 		return nil
 	}
-	log.Warnf("Skipping resource %s as its 'cassandra_keyspace_id' property could not be found.", d.Address)
+	logging.Logger.Warn().Msgf("Skipping resource %s as its 'cassandra_keyspace_id' property could not be found.", d.Address)
 	return nil
 }

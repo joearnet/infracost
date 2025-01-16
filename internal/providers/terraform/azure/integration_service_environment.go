@@ -17,7 +17,7 @@ func GetAzureRMAppIntegrationServiceEnvironmentRegistryItem() *schema.RegistryIt
 }
 
 func NewAzureRMIntegrationServiceEnvironment(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
-	region := lookupRegion(d, []string{})
+	region := d.Region
 
 	productName := "Logic Apps Integration Service Environment"
 	skuName := d.Get("sku_name").String()
@@ -57,7 +57,7 @@ func IntegrationBaseServiceEnvironmentCostComponent(name, region, productName st
 			AttributeFilters: []*schema.AttributeFilter{
 				{Key: "productName", Value: strPtr(productName)},
 				{Key: "skuName", Value: strPtr("Base")},
-				{Key: "meterName", Value: strPtr("Base Units")},
+				{Key: "meterName", Value: strPtr("Base Unit")},
 			},
 		},
 		PriceFilter: &schema.PriceFilter{

@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,14 +12,15 @@ import (
 	"testing"
 	"unicode"
 
-	"github.com/infracost/infracost/internal/config"
 	"github.com/pmezard/go-difflib/difflib"
+	"github.com/rs/zerolog"
+	"github.com/shopspring/decimal"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/infracost/infracost/internal/config"
+	"github.com/infracost/infracost/internal/logging"
 	"github.com/infracost/infracost/internal/schema"
-	"github.com/stretchr/testify/assert"
-
-	"github.com/shopspring/decimal"
 )
 
 var update = flag.Bool("update", false, "update .golden files")
@@ -155,16 +155,17 @@ func formatCost(d *decimal.Decimal) string {
 	return formatAmount(*d)
 }
 
-func AssertGoldenFile(t *testing.T, goldenFilePath string, actual []byte) {
+func AssertGoldenFile(t *testing.T, goldenFilePath string, actual []byte) bool {
 	// Load the snapshot result
 	expected := []byte("")
 	if _, err := os.Stat(goldenFilePath); err == nil || !os.IsNotExist(err) {
 		// golden file exists, load the data
-		expected, err = ioutil.ReadFile(goldenFilePath)
+		expected, err = os.ReadFile(goldenFilePath)
 		assert.NoError(t, err)
 	}
 
-	if !bytes.Equal(expected, actual) {
+	equal := bytes.Equal(expected, actual)
+	if !equal {
 		if *update {
 			// create the golden file dir if needed
 			goldenFileDir := filepath.Dir(goldenFilePath)
@@ -174,10 +175,11 @@ func AssertGoldenFile(t *testing.T, goldenFilePath string, actual []byte) {
 				}
 			}
 
-			err := ioutil.WriteFile(goldenFilePath, actual, 0600)
+			err := os.WriteFile(goldenFilePath, actual, 0600)
 			assert.NoError(t, err)
-			t.Logf(fmt.Sprintf("Wrote golden file %s", goldenFilePath))
+			t.Logf("Wrote golden file %s", goldenFilePath)
 		} else {
+
 			// Generate the diff and error message.  We don't call assert.Equal because it escapes
 			// newlines (\n) and the output looks terrible.
 			diff, _ := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
@@ -190,9 +192,11 @@ func AssertGoldenFile(t *testing.T, goldenFilePath string, actual []byte) {
 				Context:  1,
 			})
 
-			t.Errorf(fmt.Sprintf("\nOutput does not match golden file: \n\n%s\n", diff))
+			t.Errorf("\nOutput does not match golden file (%s):\n\n%s\n", goldenFilePath, diff)
 		}
 	}
+
+	return equal
 }
 
 type ErrorOnAnyWriter struct {
@@ -204,23 +208,24 @@ func (e ErrorOnAnyWriter) Write(data []byte) (n int, err error) {
 	return io.Discard.Write(data)
 }
 
-func ConfigureTestToFailOnLogs(t *testing.T, runCtx *config.RunContext) {
-	runCtx.Config.LogLevel = "warn"
-	runCtx.Config.LogDisableTimestamps = true
-	runCtx.Config.LogWriter = io.MultiWriter(os.Stderr, ErrorOnAnyWriter{t})
-	err := runCtx.Config.ConfigureLogger()
-	require.Nil(t, err)
-}
-
-func ConfigureTestToCaptureLogs(t *testing.T, runCtx *config.RunContext) *bytes.Buffer {
+func ConfigureTestToCaptureLogs(t *testing.T, runCtx *config.RunContext, level string) *bytes.Buffer {
 	logBuf := bytes.NewBuffer([]byte{})
-	runCtx.Config.LogLevel = "warn"
-	runCtx.Config.LogDisableTimestamps = true
-	runCtx.Config.LogWriter = io.MultiWriter(os.Stderr, logBuf)
+	runCtx.Config.LogLevel = level
+	runCtx.Config.SetLogDisableTimestamps(true)
+	runCtx.Config.SetLogWriter(zerolog.SyncWriter(io.MultiWriter(os.Stderr, logBuf)))
 
-	err := runCtx.Config.ConfigureLogger()
+	err := logging.ConfigureBaseLogger(runCtx.Config)
 	require.Nil(t, err)
 	return logBuf
+}
+
+func ConfigureTestToFailOnLogs(t *testing.T, runCtx *config.RunContext) {
+	runCtx.Config.LogLevel = "warn"
+	runCtx.Config.SetLogDisableTimestamps(true)
+	runCtx.Config.SetLogWriter(io.MultiWriter(os.Stderr, ErrorOnAnyWriter{t}))
+
+	err := logging.ConfigureBaseLogger(runCtx.Config)
+	require.Nil(t, err)
 }
 
 // From https://gist.github.com/stoewer/fbe273b711e6a06315d19552dd4d33e6

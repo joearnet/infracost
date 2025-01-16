@@ -35,10 +35,34 @@ resource "azurerm_postgresql_flexible_server" "burstable" {
   sku_name = "B_Standard_B1ms"
 }
 
+resource "azurerm_postgresql_flexible_server" "burstable_b2ms_vcore" {
+  name                = "example-psqlflexibleserver-b2ms"
+  resource_group_name = azurerm_resource_group.example.name
+  location            = azurerm_resource_group.example.location
+  storage_mb          = 131072
+
+  sku_name = "B_Standard_B2ms"
+}
+
 resource "azurerm_postgresql_flexible_server" "non_usage_gp" {
   name                = "example-psqlflexibleserver"
   resource_group_name = azurerm_resource_group.example.name
   location            = azurerm_resource_group.example.location
 
   sku_name = "GP_Standard_D16s_v3"
+}
+
+resource "azurerm_postgresql_flexible_server" "readable_location_set" {
+  name                = "readable-location"
+  resource_group_name = "anything"
+  location            = "East US"
+  sku_name            = "B_Standard_B1ms"
+}
+
+resource "azurerm_postgresql_flexible_server" "d2ds_v5" {
+  name                = "example-psqlflexibleserver"
+  resource_group_name = azurerm_resource_group.example.name
+  location            = azurerm_resource_group.example.location
+
+  sku_name = "GP_Standard_D2ds_v5"
 }

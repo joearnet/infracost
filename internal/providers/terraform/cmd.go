@@ -5,13 +5,14 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
 
-	log "github.com/sirupsen/logrus"
+	"github.com/rs/zerolog"
+
+	"github.com/infracost/infracost/internal/logging"
 )
 
 var defaultTerraformBinary = "terraform"
@@ -21,6 +22,8 @@ type CmdOptions struct {
 	Dir                 string
 	TerraformWorkspace  string
 	TerraformConfigFile string
+	Env                 map[string]string
+	Flags               []string
 }
 
 type CmdError struct {
@@ -38,10 +41,15 @@ func Cmd(opts *CmdOptions, args ...string) ([]byte, error) {
 		exe = defaultTerraformBinary
 	}
 
-	cmd := exec.Command(exe, args...)
-	log.Infof("Running command: %s", cmd.String())
+	cmd := exec.Command(exe, append(args, opts.Flags...)...)
+	logging.Logger.Debug().Msgf("Running command: %s", cmd.String())
 	cmd.Dir = opts.Dir
 	cmd.Env = os.Environ()
+
+	for k, v := range opts.Env {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	}
+
 	cmd.Env = append(cmd.Env, "TF_IN_AUTOMATION=true")
 
 	if opts.TerraformWorkspace != "" {
@@ -52,14 +60,15 @@ func Cmd(opts *CmdOptions, args ...string) ([]byte, error) {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("TF_CLI_CONFIG_FILE=%s", opts.TerraformConfigFile))
 	}
 
+	subLogger := logging.Logger.With().Str("binary", "terraform").Logger().Level(zerolog.DebugLevel)
 	logWriter := &cmdLogWriter{
-		logger: log.StandardLogger().WithField("binary", "terraform"),
-		level:  log.DebugLevel,
+		logger: subLogger,
+		level:  zerolog.DebugLevel,
 	}
 
 	terraformLogWriter := &cmdLogWriter{
-		logger: log.StandardLogger().WithField("binary", "terraform"),
-		level:  log.DebugLevel,
+		logger: subLogger,
+		level:  zerolog.DebugLevel,
 	}
 
 	var outbuf bytes.Buffer
@@ -83,17 +92,13 @@ func Cmd(opts *CmdOptions, args ...string) ([]byte, error) {
 	return outbuf.Bytes(), nil
 }
 
-type cmdLogger interface {
-	Log(level log.Level, args ...interface{})
-}
-
 // Adapted from https://github.com/sirupsen/logrus/issues/564#issuecomment-345471558
 // Needed to ensure we can log large Terraform output lines.
 type cmdLogWriter struct {
-	logger cmdLogger
-	level  log.Level
+	logger zerolog.Logger
 	buf    bytes.Buffer
 	mu     sync.Mutex
+	level  zerolog.Level
 }
 
 func (w *cmdLogWriter) Write(b []byte) (int, error) {
@@ -118,7 +123,7 @@ func (w *cmdLogWriter) Write(b []byte) (int, error) {
 }
 
 func (w *cmdLogWriter) alwaysFlush() {
-	w.logger.Log(w.level, w.buf.String())
+	w.logger.WithLevel(w.level).Msg(w.buf.String())
 	w.buf.Reset()
 }
 
@@ -136,27 +141,27 @@ func CreateConfigFile(dir string, terraformCloudHost string, terraformCloudToken
 		return "", nil
 	}
 
-	log.Debug("Creating temporary config file for Terraform credentials")
-	tmpFile, err := ioutil.TempFile("", "")
+	logging.Logger.Debug().Msg("Creating temporary config file for Terraform credentials")
+	tmpFile, err := os.CreateTemp("", "")
 	if err != nil {
 		return "", err
 	}
 
 	if os.Getenv("TF_CLI_CONFIG_FILE") != "" {
-		log.Debugf("TF_CLI_CONFIG_FILE is set, copying existing config from %s to config to temporary config file %s", os.Getenv("TF_CLI_CONFIG_FILE"), tmpFile.Name())
+		logging.Logger.Debug().Msgf("TF_CLI_CONFIG_FILE is set, copying existing config from %s to config to temporary config file %s", os.Getenv("TF_CLI_CONFIG_FILE"), tmpFile.Name())
 		path := os.Getenv("TF_CLI_CONFIG_FILE")
 
 		if !filepath.IsAbs(path) {
 			path, err = filepath.Abs(filepath.Join(dir, path))
 			if err != nil {
-				log.Warningf("Unable to copy existing config from %s: %v", path, err)
+				logging.Logger.Warn().Msgf("Unable to copy existing config from %s: %v", path, err)
 			}
 		}
 
 		if err == nil {
 			err = copyFile(path, tmpFile.Name())
 			if err != nil {
-				log.Warningf("Unable to copy existing config from %s: %v", path, err)
+				logging.Logger.Warn().Msgf("Unable to copy existing config from %s: %v", path, err)
 			}
 		}
 	}
@@ -177,7 +182,7 @@ func CreateConfigFile(dir string, terraformCloudHost string, terraformCloudToken
 }
 `, host, terraformCloudToken)
 
-	log.Debugf("Writing Terraform credentials to temporary config file %s", tmpFile.Name())
+	logging.Logger.Debug().Msgf("Writing Terraform credentials to temporary config file %s", tmpFile.Name())
 	if _, err := f.WriteString(contents); err != nil {
 		return tmpFile.Name(), err
 	}

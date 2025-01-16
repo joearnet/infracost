@@ -1,11 +1,18 @@
 #!/bin/bash -le
 
-# This script is used in infracost CI/CD integrations. It posts pull-request comments showing cost estimate diffs.
-# Usage docs: https://www.infracost.io/docs/integrations/cicd
-# It supports: GitHub Actions, GitLab CI, CircleCI with GitHub and Bitbucket, Bitbucket Pipelines, Azure DevOps with TfsGit repos and GitHub
-# For Bitbucket: BITBUCKET_TOKEN must be set to "myusername:my_app_password", the password needs to have Read scope
-#   on "Repositories" and "Pull Requests" so it can post comments. Using a Bitbucket App password
-#   (https://support.atlassian.com/bitbucket-cloud/docs/app-passwords/) is recommended.
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# This script is DEPRECATED and is no longer maintained.
+#
+# Please visit : https://www.infracost.io/docs/integrations/cicd/ to migrate to
+# to one of our new CI/CD integrations.
+#
+# This script will be removed September 2022.
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+echo "Warning: this script is deprecated and will be removed in Sep 2022."
+echo "Please visit https://github.com/infracost/infracost/blob/master/scripts/ci/README.md for instructions on how to upgrade."
+echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
 
 process_args () {
   # Set variables based on the order for GitHub Actions, or the env value for other CIs
@@ -17,6 +24,7 @@ process_args () {
   percentage_threshold=${6:-$percentage_threshold}
   post_condition=${7:-$post_condition}
   show_skipped=${8:-$show_skipped}
+  sync_usage_file=${9:-$sync_usage_file}
 
   # Validate post_condition
   if ! echo "$post_condition" | jq empty; then
@@ -29,6 +37,16 @@ process_args () {
   elif [ -n "$percentage_threshold" ]; then
     post_condition="{\"percentage_threshold\": $percentage_threshold}"
     echo "Warning: percentage_threshold is deprecated and will be removed in v0.9.0, please use post_condition='{\"percentage_threshold\": \"0\"}'"
+  # Default to using update method when posting to GitHub via GitHub actions, Circle CI or Azure DevOps
+  # GitHub actions
+  elif [ -n "$GITHUB_ACTIONS" ]; then
+    post_condition=${post_condition:-'{"update": true}'}
+  # CircleCI GitHub
+  elif [ -n "$CIRCLECI" ] && echo "$CIRCLE_REPOSITORY_URL" | grep -Eiq github; then
+    post_condition=${post_condition:-'{"update": true}'}
+  # Azure DevOps GitHub
+  elif [ -n "$SYSTEM_COLLECTIONURI" ] && [ "$BUILD_REASON" = "PullRequest" ] && [ "$BUILD_REPOSITORY_PROVIDER" = "GitHub" ]; then
+    post_condition=${post_condition:-'{"update": true}'}
   else
     post_condition=${post_condition:-'{"has_diff": true}'}
   fi
@@ -48,7 +66,7 @@ process_args () {
   if [ -n "$GIT_SSH_KEY" ]; then
     echo "Setting up private Git SSH key so terraform can access your private modules."
     mkdir -p .ssh
-    echo "${GIT_SSH_KEY}" > .ssh/git_ssh_key
+    echo "$GIT_SSH_KEY" > .ssh/git_ssh_key
     chmod 600 .ssh/git_ssh_key
     export GIT_SSH_COMMAND="ssh -i $(pwd)/.ssh/git_ssh_key -o 'StrictHostKeyChecking=no'"
   fi
@@ -60,7 +78,7 @@ process_args () {
 }
 
 build_breakdown_cmd () {
-  breakdown_cmd="${INFRACOST_BINARY} breakdown --no-color --format json"
+  breakdown_cmd="$INFRACOST_BINARY breakdown --no-color --format json"
 
   if [ -n "$path" ]; then
     breakdown_cmd="$breakdown_cmd --path $path"
@@ -72,7 +90,11 @@ build_breakdown_cmd () {
     breakdown_cmd="$breakdown_cmd --terraform-workspace $terraform_workspace"
   fi
   if [ -n "$usage_file" ]; then
-    breakdown_cmd="$breakdown_cmd --usage-file $usage_file"
+    if [ "$sync_usage_file" = "true" ] || [ "$sync_usage_file" = "True" ] || [ "$sync_usage_file" = "TRUE" ]; then
+      breakdown_cmd="$breakdown_cmd --sync-usage-file --usage-file $usage_file"
+    else
+      breakdown_cmd="$breakdown_cmd --usage-file $usage_file"
+    fi
   fi
   if [ -n "$config_file" ]; then
     breakdown_cmd="$breakdown_cmd --config-file $config_file"
@@ -81,7 +103,7 @@ build_breakdown_cmd () {
 }
 
 build_output_cmd () {
-  output_cmd="${INFRACOST_BINARY} output --no-color --format diff --path $1"
+  output_cmd="$INFRACOST_BINARY output --no-color --format diff --path $1"
   if [ -n "$show_skipped" ]; then
     # The "=" is important as otherwise the value of the flag is ignored by the CLI
     output_cmd="$output_cmd --show-skipped=$show_skipped"
@@ -89,65 +111,247 @@ build_output_cmd () {
   echo "${output_cmd}"
 }
 
+MSG_START="💰 Infracost estimate:"
+build_msg () {
+  local include_html=$1
+  local update_msg=$2
+
+  local percent_display
+  local change_word
+  local change_emoji
+  local msg
+
+  percent_display=$(percent_display "$past_total_monthly_cost" "$total_monthly_cost")
+  change_word=$(change_word "$past_total_monthly_cost" "$total_monthly_cost")
+  change_emoji=$(change_emoji "$past_total_monthly_cost" "$total_monthly_cost")
+
+  msg="$MSG_START "
+  if [ "$diff_total_monthly_cost" != "0" ]; then
+    msg+="**monthly cost will $change_word by $(format_cost "${diff_total_monthly_cost#-}")$percent_display** $change_emoji\n"
+  else
+    msg+="**monthly cost will not change**\n"
+  fi
+  msg+="\n"
+
+  if [ "$include_html" = true ]; then
+    msg+="<table>\n"
+    msg+="  <thead>\n"
+    msg+="    <td>Project</td>\n"
+    msg+="    <td>Previous</td>\n"
+    msg+="    <td>New</td>\n"
+    msg+="    <td>Diff</td>\n"
+    msg+="  </thead>\n"
+    msg+="  <tbody>\n"
+
+    local diff_resources
+    local skipped_projects
+    for (( i = 0; i < project_count; i++ )); do
+      diff_resources=$(jq '.projects['"$i"'].diff.resources[]' infracost_breakdown.json)
+      if  [ -n "$diff_resources" ] || [ $project_count -eq 1 ]; then
+        msg+="$(build_project_row "$i")"
+      else
+        if [ -z "$skipped_projects" ]; then
+          skipped_projects="$(jq -r '.projects['"$i"'].name' infracost_breakdown.json)"
+        else
+          skipped_projects="$skipped_projects, $(jq -r '.projects['"$i"'].name' infracost_breakdown.json)"
+        fi
+      fi
+    done
+
+    if (( $project_count > 1 )); then
+      msg+="$(build_overall_row)"
+    fi
+
+    msg+="  </tbody>\n"
+    msg+="</table>\n"
+    msg+="\n"
+
+    if [ -n "$skipped_projects" ]; then
+      msg+="The following projects have no cost estimate changes: $skipped_projects\n\n"
+    fi
+
+    msg+="<details>\n"
+    msg+="  <summary><strong>Infracost output</strong></summary>\n"
+  else
+    msg+="Previous monthly cost: $(format_cost "$past_total_monthly_cost")\n"
+    msg+="New monthly cost: $(format_cost "$total_monthly_cost")\n"
+    msg+="\n"
+    msg+="**Infracost output:**\n"
+  fi
+
+  msg+="\n"
+  msg+="\`\`\`\n"
+  msg+="$(echo "$diff_output" | sed "s/%/%%/g")\n"
+  msg+="\`\`\`\n"
+
+  if [ "$include_html" = true ]; then
+    msg+="</details>\n"
+    if [ -n "$update_msg" ]; then
+      msg+="\n$update_msg\n\n"
+    fi
+    msg+="<sub>\n"
+    msg+="  Is this comment useful? <a href=\"https://dashboard.infracost.io/feedback/redirect?value=yes\" rel=\"noopener noreferrer\" target=\"_blank\">Yes</a>, <a href=\"https://dashboard.infracost.io/feedback/redirect?value=no\" rel=\"noopener noreferrer\" target=\"_blank\">No</a>, <a href=\"https://dashboard.infracost.io/feedback/redirect?value=other\" rel=\"noopener noreferrer\" target=\"_blank\">Other</a>\n"
+    msg+="</sub>\n"
+  fi
+
+  printf "$msg"
+}
+
+build_project_row () {
+  local i=$1
+
+  local max_name_length
+  local name
+  local label
+  local past_monthly_cost
+  local monthly_cost
+  local diff_monthly_cost
+  local percent_display
+  local sym
+
+  max_name_length=64
+  name=$(jq -r '.projects['"$i"'].name' infracost_breakdown.json)
+  # Truncate the middle of the name if it's too long
+  name=$(echo $name | awk -v l="$max_name_length" '{if (length($0) > l) {print substr($0, 0, l-(l/2)-1)"..."substr($0, length($0)-(l/2)+3, length($0))} else print $0}')
+
+  past_monthly_cost=$(jq -r '.projects['"$i"'].pastBreakdown.totalMonthlyCost' infracost_breakdown.json)
+  monthly_cost=$(jq -r '.projects['"$i"'].breakdown.totalMonthlyCost' infracost_breakdown.json)
+  diff_monthly_cost=$(jq -r '.projects['"$i"'].diff.totalMonthlyCost' infracost_breakdown.json)
+
+  if [ "$diff_monthly_cost" != "0" ]; then
+    percent_display=$(percent_display "$past_monthly_cost" "$monthly_cost")
+  fi
+
+  local row=""
+  row+="    <tr>\n"
+  row+="      <td>$name</td>\n"
+  row+="      <td align=\"right\">$(format_cost "$past_monthly_cost")</td>\n"
+  row+="      <td align=\"right\">$(format_cost "$monthly_cost")</td>\n"
+  row+="      <td>$(format_cost "$diff_monthly_cost" true)$percent_display</td>\n"
+  row+="    </tr>\n"
+
+  printf "%s" "$row"
+}
+
+build_overall_row () {
+  local percent_display
+  local sym
+
+  if [ "$diff_total_monthly_cost" != "0" ]; then
+    percent_display=$(percent_display "$past_total_monthly_cost" "$total_monthly_cost")
+  fi
+
+  local row=""
+  row+="    <tr>\n"
+  row+="      <td>All projects</td>\n"
+  row+="      <td align=\"right\">$(format_cost "$past_total_monthly_cost")</td>\n"
+  row+="      <td align=\"right\">$(format_cost "$total_monthly_cost")</td>\n"
+  row+="      <td>$(format_cost "$diff_total_monthly_cost" true)$percent_display</td>\n"
+  row+="    </tr>\n"
+
+  printf "%s" "$row"
+}
+
 format_cost () {
   cost=$1
+  include_plus=$2
 
-  if [ -z "$cost" ] || [ "${cost}" = "null" ]; then
-    echo "-"
-  elif [ "$(echo "$cost < 100" | bc -l)" = 1 ]; then
-    printf "$currency%0.2f" "$cost"
+  sym=""
+  if [ "$(echo "$cost < 0" | bc -l)" = 1 ]; then
+    sym="-"
+  elif [ "$include_plus" = true ] && [ "$(echo "$cost > 0" | bc -l)" = 1 ]; then
+    sym="+"
+  fi
+
+  if [ -z "$cost" ] || [ "$cost" = "null" ] || [ "$cost" = "0" ]; then
+    cost="0"
+  elif [ "$(echo "${cost#-} < 100" | bc -l)" = 1 ]; then
+    cost="$(printf "%'0.2f" "$cost")"
   else
-    printf "$currency%0.0f" "$cost"
+    cost="$(printf "%'0.0f" "$cost")"
+  fi
+
+  # If the currency length is greater than 1, assume it's a currency code and display `INR -22.78`
+  if [ ${#currency} -gt 1 ]; then
+    printf "%s" "$currency$sym${cost#-}"
+  # If currency length is 1, assume it's a symbol and display it like `-$22.78`
+  else
+    printf "%s" "$sym$currency${cost#-}"
   fi
 }
 
-MSG_START="💰 Infracost estimate:"
-build_msg () {
-  include_html=$1
-  update_msg=$2
-  
-  change_word="increase"
-  change_sym="+"
-    change_emoji="📈"
-  if [ "$(echo "$total_monthly_cost < ${past_total_monthly_cost}" | bc -l)" = 1 ]; then
-    change_word="decrease"
-    change_sym=""
+calculate_percentage () {
+  local old=$1
+  local new=$2
+
+  local percent=""
+
+  # If both old and new costs are greater than 0
+  if [ "$(echo "$old > 0" | bc -l)" = 1 ] && [ "$(echo "$new > 0" | bc -l)" = 1 ]; then
+    percent="$(echo "scale=6; $new / $old * 100 - 100" | bc)"
+  fi
+
+  # If both old and new costs are less than or equal to 0
+  if [ "$(echo "$old <= 0" | bc -l)" = 1 ] && [ "$(echo "$new <= 0" | bc -l)" = 1 ]; then
+    percent="0"
+  fi
+
+  printf "%s" "$percent"
+}
+
+change_emoji () {
+  local old=$1
+  local new=$2
+
+  local change_emoji="📈"
+  if [ "$(echo "$new < $old" | bc -l)" = 1 ]; then
     change_emoji="📉"
   fi
-  
-  percent_display=""
+
+  printf "%s" "$change_emoji"
+}
+
+change_word () {
+  local old=$1
+  local new=$2
+
+  local change_word="increase"
+  if [ "$(echo "$new < $old" | bc -l)" = 1 ]; then
+    change_word="decrease"
+  fi
+
+  printf "%s" "$change_word"
+}
+
+change_symbol () {
+  local old=$1
+  local new=$2
+
+  local change_symbol="+"
+  if [ "$(echo "$new <= $old" | bc -l)" = 1 ]; then
+    change_symbol=""
+  fi
+
+  printf "%s" "$change_symbol"
+}
+
+percent_display () {
+  local old=$1
+  local new=$2
+
+  local percent
+  local sym
+
+  percent=$(calculate_percentage "$old" "$new")
+  sym=$(change_symbol "$old" "$new")
+
+  local s=""
   if [ -n "$percent" ]; then
-    percent_display="$(printf "%.0f" "$percent")"
-    percent_display=" (${change_sym}${percent_display}%%)"
+    s="$(printf "%.0f" "$percent")"
+    s=" ($sym$s%%)"
   fi
-  
-  msg="${MSG_START} **monthly cost will ${change_word} by $(format_cost "$diff_cost")$percent_display** ${change_emoji}\n"
-  msg="${msg}\n"
-  msg="${msg}Previous monthly cost: $(format_cost "$past_total_monthly_cost")\n"
-  msg="${msg}New monthly cost: $(format_cost "$total_monthly_cost")\n"
-  msg="${msg}\n"
-  
-  if [ "$include_html" = true ]; then
-    msg="${msg}<details>\n"
-    msg="${msg}  <summary><strong>Infracost output</strong></summary>\n"
-  else
-    msg="${msg}**Infracost output:**\n"
-  fi
-    
-  msg="${msg}\n"
-  msg="${msg}\`\`\`\n"
-  msg="${msg}$(echo "${diff_output}" | sed "s/%/%%/g")\n"
-  msg="${msg}\`\`\`\n"
-  
-  if [ "$include_html" = true ]; then
-    msg="${msg}</details>\n"
-    if [ -n "$update_msg" ]; then
-      msg="${msg}\n${update_msg}\n\n"
-    fi
-    msg="${msg}<sub><a href='https://infracost.io/feedback' rel='noopener noreferrer' target='_blank'>How can this comment be more helpful?</a></sub>\n"
-  fi
-  
-  printf "$msg"
+
+  printf "%s" "$s"
 }
 
 post_to_github () {
@@ -203,7 +407,7 @@ post_to_github_pull_request () {
 
   msg="$(build_msg true "This comment will be updated when the cost estimate changes.")"
 
-  if [ "${latest_pr_comment}" != "null" ]; then
+  if [ "$latest_pr_comment" != "null" ]; then
     existing_msg=$(echo "$latest_pr_comment" | jq -r .body)
     # '// /' does a string substitution that removes spaces before comparison
     if [ "${msg// /}" != "${existing_msg// /}" ]; then
@@ -240,6 +444,30 @@ post_bitbucket_comment () {
     -H "Content-Type: application/json" \
     -u "$BITBUCKET_TOKEN" \
     "https://api.bitbucket.org/2.0/repositories/$1"
+}
+
+get_bitbucket_server_url () {
+  BITBUCKET_GIT_URL="$(git config --get remote.origin.url)"
+  BITBUCKET_PROJECT="$(cut -d '/' -f4 <<<$BITBUCKET_GIT_URL)"
+  BITBUCKET_REPO="$(basename $BITBUCKET_GIT_URL .git)"
+  printf "https://$BITBUCKET_SERVER_HOSTNAME/rest/api/1.0/projects/$BITBUCKET_PROJECT/repos/$BITBUCKET_REPO/pull-requests"
+}
+
+get_bitbucket_server_pr_id () {
+  BITBUCKET_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+  curl -sS \
+    -H "Authorization: Bearer $BITBUCKET_TOKEN" \
+    "$1?at=refs/heads/$BITBUCKET_BRANCH&direction=OUTGOING" \
+    | jq -r '.["values"][0].id'
+}
+
+post_bitbucket_server_comment () {
+  msg="$(build_msg false)"
+  echo "Posting comment to $1"
+  jq -Mnc --arg msg "$msg" '{"text": "\($msg)"}' | curl -sSL -o /dev/null -X POST -d @- \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $BITBUCKET_TOKEN" \
+    "$1"
 }
 
 post_to_circle_ci () {
@@ -279,6 +507,16 @@ post_to_bitbucket () {
   fi
 }
 
+post_to_bitbucket_server () {
+  if [ -z "$BITBUCKET_TOKEN" ]; then
+    echo "Error: BITBUCKET_TOKEN is required to post comment to Bitbucket Server"
+  else
+    BITBUCKET_SERVER_URL="$(get_bitbucket_server_url)"
+    BITBUCKET_SERVER_PR_ID="$(get_bitbucket_server_pr_id $BITBUCKET_SERVER_URL)"
+    post_bitbucket_server_comment "$BITBUCKET_SERVER_URL/$BITBUCKET_SERVER_PR_ID/comments"
+  fi
+}
+
 post_to_azure_devops () {
   if [ "$BUILD_REASON" = "PullRequest" ]; then
     if [ "$BUILD_REPOSITORY_PROVIDER" = "GitHub" ]; then
@@ -296,7 +534,7 @@ post_to_azure_devops () {
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $SYSTEM_ACCESSTOKEN" \
         "$SYSTEM_COLLECTIONURI$SYSTEM_TEAMPROJECT/_apis/git/repositories/$BUILD_REPOSITORY_ID/pullRequests/$SYSTEM_PULLREQUEST_PULLREQUESTID/threads?api-version=6.0"
-    else 
+    else
       echo "Posting comments to Azure DevOps $BUILD_REPOSITORY_PROVIDER is not supported, email hello@infracost.io for help"
     fi
   else
@@ -314,7 +552,7 @@ post_to_slack () {
 
 load_github_env () {
   export VCS_REPO_URL=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY
-  
+
   github_event=$(cat "$GITHUB_EVENT_PATH")
 
   if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
@@ -334,7 +572,7 @@ load_github_env () {
 
 load_gitlab_env () {
   export VCS_REPO_URL=$CI_REPOSITORY_URL
-  
+
   first_mr=$(echo "$CI_OPEN_MERGE_REQUESTS" | cut -d',' -f1)
   repo=$(echo "$first_mr" | cut -d'!' -f1)
   mr_number=$(echo "$first_mr" | cut -d'!' -f2)
@@ -378,14 +616,15 @@ echo "$breakdown_output" > infracost_breakdown.json
 
 infracost_output_cmd=$(build_output_cmd "infracost_breakdown.json")
 echo "$infracost_output_cmd" > infracost_output_cmd
-  
+
 echo "Running infracost output using:"
 echo "  $ $(cat infracost_output_cmd)"
 diff_output=$(cat infracost_output_cmd | sh)
 
-past_total_monthly_cost=$(jq '[.projects[].pastBreakdown.totalMonthlyCost | select (.!=null) | tonumber] | add' infracost_breakdown.json)
-total_monthly_cost=$(jq '[.projects[].breakdown.totalMonthlyCost | select (.!=null) | tonumber] | add' infracost_breakdown.json)
-diff_cost=$(jq '[.projects[].diff.totalMonthlyCost | select (.!=null) | tonumber] | add' infracost_breakdown.json)
+project_count=$(jq -r '.projects | length' infracost_breakdown.json)
+past_total_monthly_cost=$(jq '(.pastTotalMonthlyCost // 0) | tonumber' infracost_breakdown.json)
+total_monthly_cost=$(jq '(.totalMonthlyCost // 0) | tonumber' infracost_breakdown.json)
+diff_total_monthly_cost=$(jq '(.diffTotalMonthlyCost // 0) | tonumber' infracost_breakdown.json)
 currency=$(jq -r '.currency | select (.!=null)' infracost_breakdown.json)
 if [ "$currency" = "" ] || [ "$currency" = "USD" ]; then
   currency="$"
@@ -397,17 +636,9 @@ else
   currency="$currency " # Space is needed so output is "INR 123"
 fi
 
-# If both old and new costs are greater than 0
-if [ "$(echo "$past_total_monthly_cost > 0" | bc -l)" = 1 ] && [ "$(echo "$total_monthly_cost > 0" | bc -l)" = 1 ]; then
-  percent="$(echo "scale=6; $total_monthly_cost / $past_total_monthly_cost * 100 - 100" | bc)"
-fi
+percent=$(calculate_percentage "$past_total_monthly_cost" "$total_monthly_cost")
 
-# If both old and new costs are less than or equal to 0
-if [ "$(echo "$past_total_monthly_cost <= 0" | bc -l)" = 1 ] && [ "$(echo "$total_monthly_cost <= 0" | bc -l)" = 1 ]; then
-  percent=0
-fi
-
-absolute_percent=$(echo $percent | tr -d -)
+absolute_percent=$(echo "$percent" | tr -d -)
 diff_resources=$(jq '[.projects[].diff.resources[]] | add' infracost_breakdown.json)
 
 if [ "$(echo "$post_condition" | jq '.always')" = "true" ]; then
@@ -446,6 +677,8 @@ elif [ -n "$CIRCLECI" ]; then
   post_to_circle_ci
 elif [ -n "$BITBUCKET_PIPELINES" ]; then
   post_to_bitbucket
+elif [ -n "$BITBUCKET_SERVER_HOSTNAME" ]; then
+  post_to_bitbucket_server
 elif [ -n "$SYSTEM_COLLECTIONURI" ]; then
   post_to_azure_devops
 fi

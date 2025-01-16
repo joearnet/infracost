@@ -2,20 +2,25 @@ package aws
 
 import (
 	"context"
+	"math"
+
+	"github.com/shopspring/decimal"
 
 	"github.com/infracost/infracost/internal/resources"
 	"github.com/infracost/infracost/internal/schema"
-	"github.com/shopspring/decimal"
+	"github.com/infracost/infracost/internal/usage/aws"
 )
 
 type EKSNodeGroup struct {
 	// "required" args that can't really be missing.
-	Address string
-	Region  string
+	Address     string
+	Region      string
+	Name        string
+	ClusterName string
 
 	InstanceType   string
 	PurchaseOption string
-	DiskSize       int64
+	DiskSize       float64
 
 	// "optional" args, that may be empty depending on the resource config
 	RootBlockDevice *EBSVolume
@@ -31,7 +36,15 @@ type EKSNodeGroup struct {
 	VCPUCount                     *int64  `infracost_usage:"vcpu_count"`
 }
 
-var EKSNodeGroupUsageSchema = append([]*schema.UsageSchemaItem{
+func (a *EKSNodeGroup) CoreType() string {
+	return "EKSNodeGroup"
+}
+
+func (a *EKSNodeGroup) UsageSchema() []*schema.UsageItem {
+	return EKSNodeGroupUsageSchema
+}
+
+var EKSNodeGroupUsageSchema = append([]*schema.UsageItem{
 	{Key: "instances", DefaultValue: 0, ValueType: schema.Int64},
 }, InstanceUsageSchema...)
 
@@ -48,15 +61,15 @@ func (a *EKSNodeGroup) PopulateUsage(u *schema.UsageData) {
 // as the default value for the "instances" usage param.  Without this, --sync-usage-file sets instances=0 causing the
 // costs for the node group to be $0.  This can be removed when --sync-usage-file creates the usage file with usgage keys
 // commented out by default.
-func (a *EKSNodeGroup) getUsageSchemaWithDefaultInstanceCount() []*schema.UsageSchemaItem {
+func (a *EKSNodeGroup) getUsageSchemaWithDefaultInstanceCount() []*schema.UsageItem {
 	if a.InstanceCount == nil || *a.InstanceCount == 0 {
 		return EKSNodeGroupUsageSchema
 	}
 
-	usageSchema := make([]*schema.UsageSchemaItem, 0, len(EKSNodeGroupUsageSchema))
+	usageSchema := make([]*schema.UsageItem, 0, len(EKSNodeGroupUsageSchema))
 	for _, u := range EKSNodeGroupUsageSchema {
 		if u.Key == "instances" {
-			usageSchema = append(usageSchema, &schema.UsageSchemaItem{Key: "instances", DefaultValue: a.InstanceCount, ValueType: schema.Int64})
+			usageSchema = append(usageSchema, &schema.UsageItem{Key: "instances", DefaultValue: intVal(a.InstanceCount), ValueType: schema.Int64})
 		} else {
 			usageSchema = append(usageSchema, u)
 		}
@@ -101,7 +114,7 @@ func (a *EKSNodeGroup) BuildResource() *schema.Resource {
 			Address: "root_block_device",
 			Region:  a.Region,
 			Type:    "gp2",
-			Size:    intPtr(a.DiskSize),
+			Size:    intPtr(int64(a.DiskSize)),
 		}
 
 		instanceResource := instance.BuildResource()
@@ -126,12 +139,39 @@ func (a *EKSNodeGroup) BuildResource() *schema.Resource {
 
 	estimate := func(ctx context.Context, u map[string]interface{}) error {
 		err := estimateInstanceQualities(ctx, u)
+		if err != nil {
+			return err
+		}
+
 		// By default (no LaunchTemplate), instances use Amazon Linux 2 AMI."
 		// c.f. https://docs.aws.amazon.com/eks/latest/userguide/managed-node-groups.html
 		if _, ok := u["operating_system"]; !ok {
 			u["operating_system"] = "linux"
 		}
-		return err
+
+		if a.ClusterName != "" && a.Name != "" {
+			// Sum the counts from the EKS Node Group's Autoscaling Groups
+			asgNames, err := aws.EKSGetNodeGroupAutoscalingGroups(ctx, a.Region, a.ClusterName, a.Name)
+			if err != nil {
+				return err
+			}
+			count := float64(0.0)
+
+			if len(asgNames) > 0 {
+				for _, asgName := range asgNames {
+					asgCount, err := aws.AutoscalingGetInstanceCount(ctx, a.Region, asgName)
+					if err != nil {
+						return err
+					}
+					count += asgCount
+				}
+			}
+
+			if count > 0 {
+				u["instances"] = int64(math.Round(count))
+			}
+		}
+		return nil
 	}
 	r.EstimateUsage = estimate
 

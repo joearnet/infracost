@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/infracost/infracost/internal/logging"
 	"github.com/infracost/infracost/internal/schema"
-	log "github.com/sirupsen/logrus"
 
 	"github.com/shopspring/decimal"
 )
@@ -18,7 +18,7 @@ func GetAzureRMPostgreSQLServerRegistryItem() *schema.RegistryItem {
 }
 
 func NewAzureRMPostrgreSQLServer(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
-	region := lookupRegion(d, []string{})
+	region := d.Region
 
 	var costComponents []*schema.CostComponent
 	serviceName := "Azure Database for PostgreSQL"
@@ -30,7 +30,7 @@ func NewAzureRMPostrgreSQLServer(d *schema.ResourceData, u *schema.UsageData) *s
 		family = strings.Split(sku, "_")[1]
 		cores = strings.Split(sku, "_")[2]
 	} else {
-		log.Warnf("Unrecognised PostgreSQL SKU format for resource %s: %s", d.Address, sku)
+		logging.Logger.Warn().Msgf("Unrecognised PostgreSQL SKU format for resource %s: %s", d.Address, sku)
 		return nil
 	}
 
@@ -41,7 +41,7 @@ func NewAzureRMPostrgreSQLServer(d *schema.ResourceData, u *schema.UsageData) *s
 	}[tier]
 
 	if tierName == "" {
-		log.Warnf("Unrecognised PostgreSQL tier prefix for resource %s: %s", d.Address, tierName)
+		logging.Logger.Warn().Msgf("Unrecognised PostgreSQL tier prefix for resource %s: %s", d.Address, tierName)
 		return nil
 	}
 

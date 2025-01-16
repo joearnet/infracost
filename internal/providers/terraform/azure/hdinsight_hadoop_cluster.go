@@ -4,9 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/infracost/infracost/internal/schema"
 	"github.com/shopspring/decimal"
 	"github.com/tidwall/gjson"
+
+	"github.com/infracost/infracost/internal/schema"
 )
 
 func GetAzureRMHDInsightHadoopClusterRegistryItem() *schema.RegistryItem {
@@ -17,7 +18,7 @@ func GetAzureRMHDInsightHadoopClusterRegistryItem() *schema.RegistryItem {
 }
 
 func NewAzureRMHDInsightHadoopCluster(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
-	region := lookupRegion(d, []string{})
+	region := d.Region
 
 	costComponents := []*schema.CostComponent{}
 
@@ -54,12 +55,12 @@ func hdInsightVMCostComponent(region, node, instanceType string, instances int64
 	dSeries := []string{"D1", "D2", "D3", "D4", "D5"}
 	aSeries := []string{"A5", "A6", "A7", "A8", "A9", "A10", "A11"}
 	if len(t) > 1 {
-		if Contains(dSeries, t[1]) {
+		if contains(dSeries, t[1]) {
 			instanceType = fmt.Sprintf("%s_%s", t[0], t[1])
 		}
 	}
 	if len(t) == 1 {
-		if Contains(aSeries, t[0]) {
+		if contains(aSeries, t[0]) {
 			instanceType = fmt.Sprintf("Standard_%s", t[0])
 		}
 	}

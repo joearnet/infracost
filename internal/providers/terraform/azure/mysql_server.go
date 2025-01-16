@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/infracost/infracost/internal/logging"
 	"github.com/infracost/infracost/internal/schema"
-	log "github.com/sirupsen/logrus"
 
 	"github.com/shopspring/decimal"
 )
@@ -18,7 +18,7 @@ func GetAzureRMMySQLServerRegistryItem() *schema.RegistryItem {
 }
 
 func NewAzureRMMySQLServer(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
-	region := lookupRegion(d, []string{})
+	region := d.Region
 
 	serviceName := "Azure Database for MySQL"
 	var costComponents []*schema.CostComponent
@@ -30,7 +30,7 @@ func NewAzureRMMySQLServer(d *schema.ResourceData, u *schema.UsageData) *schema.
 		family = strings.Split(sku, "_")[1]
 		cores = strings.Split(sku, "_")[2]
 	} else {
-		log.Warnf("Unrecognised MySQL SKU format for resource %s: %s", d.Address, sku)
+		logging.Logger.Warn().Msgf("Unrecognised MySQL SKU format for resource %s: %s", d.Address, sku)
 		return nil
 	}
 
@@ -41,14 +41,17 @@ func NewAzureRMMySQLServer(d *schema.ResourceData, u *schema.UsageData) *schema.
 	}[tier]
 
 	if tierName == "" {
-		log.Warnf("Unrecognised MySQL tier prefix for resource %s: %s", d.Address, tierName)
+		logging.Logger.Warn().Msgf("Unrecognised MySQL tier prefix for resource %s: %s", d.Address, tierName)
 		return nil
 	}
 
 	productNameRegex := fmt.Sprintf("/%s - Compute %s/", tierName, family)
 	skuName := fmt.Sprintf("%s vCore", cores)
 
-	costComponents = append(costComponents, databaseComputeInstance(region, fmt.Sprintf("Compute (%s)", sku), serviceName, productNameRegex, skuName))
+	name := fmt.Sprintf("Compute (%s)", sku)
+	logging.Logger.Debug().Msgf("'Multiple products found' are safe to ignore for '%s' due to limitations in the Azure API.", name)
+
+	costComponents = append(costComponents, databaseComputeInstance(region, name, serviceName, productNameRegex, skuName))
 
 	storageGB := d.Get("storage_mb").Int() / 1024
 

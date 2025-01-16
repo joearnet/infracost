@@ -1,13 +1,15 @@
 package terraform
 
 import (
+	"github.com/stretchr/testify/require"
 	"testing"
 
-	"github.com/infracost/infracost/internal/config"
-	"github.com/infracost/infracost/internal/schema"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/tidwall/gjson"
+
+	"github.com/infracost/infracost/internal/config"
+	"github.com/infracost/infracost/internal/schema"
 )
 
 func TestParseJSONResources(t *testing.T) {
@@ -33,6 +35,34 @@ func TestParseJSONResources(t *testing.T) {
 		{
 			expected: &schema.Resource{
 				Name:         "aws_cloudwatch_log_group.array_resource[1]",
+				ResourceType: "aws_cloudwatch_log_group",
+				IsSkipped:    false,
+				NoPrice:      false,
+				CostComponents: []*schema.CostComponent{
+					{
+						Name:            "Data ingested",
+						MonthlyQuantity: &decimal.Zero,
+					},
+				},
+			},
+		},
+		{
+			expected: &schema.Resource{
+				Name:         "aws_cloudwatch_log_group.each_resource[\"0\"]",
+				ResourceType: "aws_cloudwatch_log_group",
+				IsSkipped:    false,
+				NoPrice:      false,
+				CostComponents: []*schema.CostComponent{
+					{
+						Name:            "Data ingested",
+						MonthlyQuantity: &decimal.Zero,
+					},
+				},
+			},
+		},
+		{
+			expected: &schema.Resource{
+				Name:         "aws_cloudwatch_log_group.each_resource[\"1\"]",
 				ResourceType: "aws_cloudwatch_log_group",
 				IsSkipped:    false,
 				NoPrice:      false,
@@ -100,6 +130,38 @@ func TestParseJSONResources(t *testing.T) {
 						}
 					},
 					{
+						"address":"aws_cloudwatch_log_group.each_resource[\"0\"]",
+						"mode":"managed",
+						"type":"aws_cloudwatch_log_group",
+						"name":"each_resource",
+						"index":"0",
+						"provider_name":"registry.terraform.io/hashicorp/aws",
+						"schema_version":0,
+						"values": {
+							"kms_key_id":null,
+							"name":"log-group0",
+							"name_prefix":null,
+							"retention_in_days":0,
+							"tags":null
+						}
+					},
+					{
+						"address":"aws_cloudwatch_log_group.each_resource[\"1\"]",
+						"mode":"managed",
+						"type":"aws_cloudwatch_log_group",
+						"name":"each_resource",
+						"index":"1",
+						"provider_name":"registry.terraform.io/hashicorp/aws",
+						"schema_version":0,
+						"values": {
+							"kms_key_id":null,
+							"name":"log-group0",
+							"name_prefix":null,
+							"retention_in_days":0,
+							"tags":null
+						}
+					},
+					{
 						"address":"aws_cloudwatch_log_group.non_array_resource",
 						"mode":"managed",
 						"type":"aws_cloudwatch_log_group",
@@ -158,6 +220,56 @@ func TestParseJSONResources(t *testing.T) {
 					"after": {
 						"kms_key_id":null,
 						"name":"log-group1",
+						"name_prefix":null,
+						"retention_in_days":0,
+						"tags":null
+					},
+					"after_unknown": {
+						"arn":true,
+						"id":true
+					}
+				}
+			},
+			{
+				"address":"aws_cloudwatch_log_group.each_resource[\"0\"]",
+				"mode":"managed",
+				"type":"aws_cloudwatch_log_group",
+				"name":"each_resource",
+				"index":"0",
+				"provider_name":"registry.terraform.io/hashicorp/aws",
+				"change": {
+					"actions": [
+						"create"
+					],
+					"before":null,
+					"after": {
+						"kms_key_id":null,
+						"name":"log-group0",
+						"name_prefix":null,
+						"retention_in_days":0,
+						"tags":null
+					},
+					"after_unknown": {
+						"arn":true,
+						"id":true
+					}
+				}
+			},
+			{
+				"address":"aws_cloudwatch_log_group.each_resource[\"1\"]",
+				"mode":"managed",
+				"type":"aws_cloudwatch_log_group",
+				"name":"each_resource",
+				"index":"1",
+				"provider_name":"registry.terraform.io/hashicorp/aws",
+				"change": {
+					"actions": [
+						"create"
+					],
+					"before":null,
+					"after": {
+						"kms_key_id":null,
+						"name":"log-group0",
 						"name_prefix":null,
 						"retention_in_days":0,
 						"tags":null
@@ -246,6 +358,27 @@ func TestParseJSONResources(t *testing.T) {
 							}
 						},
 						{
+							"address":"aws_cloudwatch_log_group.each_resource",
+							"mode":"managed",
+							"type":"aws_cloudwatch_log_group",
+							"name":"each_resource",
+							"provider_config_key":"aws",
+							"expressions": {
+								"name": {
+									"references": [
+										"each.key"
+									]
+								}
+							},
+							"schema_version":0,
+							"for_each_expression": {
+								"references": [
+									"0",
+									"1"
+								]
+							}
+						},
+						{
 							"address":"aws_cloudwatch_log_group.non_array_resource",
 							"mode":"managed",
 							"type":"aws_cloudwatch_log_group",
@@ -266,8 +399,11 @@ func TestParseJSONResources(t *testing.T) {
 
 	parsed := gjson.Parse(testData)
 
-	usage := schema.NewUsageMap(map[string]interface{}{
+	usage := schema.NewUsageMapFromInterface(map[string]interface{}{
 		"aws_cloudwatch_log_group.array_resource[*]": map[string]interface{}{
+			"monthly_data_ingested_gb": 0,
+		},
+		"aws_cloudwatch_log_group.each_resource[*]": map[string]interface{}{
 			"monthly_data_ingested_gb": 0,
 		},
 	})
@@ -276,9 +412,13 @@ func TestParseJSONResources(t *testing.T) {
 	conf := parsed.Get("configuration.root_module")
 	vars := parsed.Get("variables")
 
-	p := NewParser(config.EmptyProjectContext())
+	p := NewParser(config.NewProjectContext(config.EmptyRunContext(), &config.Project{}, map[string]interface{}{}), true)
 
-	actual := p.parseJSONResources(false, nil, usage, parsed, providerConf, conf, vars)
+	parsedResources := p.parseJSONResources(false, nil, usage, NewConfLoader(conf), parsed, providerConf, vars)
+	actual := make([]*schema.Resource, len(parsedResources))
+	for i, pr := range parsedResources {
+		actual[i] = schema.BuildResource(pr.PartialResource, nil)
+	}
 
 	i := 0
 	for _, test := range tests {
@@ -344,10 +484,11 @@ func TestCreateResource(t *testing.T) {
 		},
 	}
 
-	p := NewParser(config.EmptyProjectContext())
+	p := NewParser(config.NewProjectContext(config.EmptyRunContext(), &config.Project{}, map[string]interface{}{}), true)
 
 	for _, test := range tests {
-		actual := p.createResource(test.data, nil)
+		parsed := p.createParsedResource(test.data, nil)
+		actual := schema.BuildResource(parsed.PartialResource, nil)
 		assert.Equal(t, test.expected.Name, actual.Name)
 		assert.Equal(t, test.expected.ResourceType, actual.ResourceType)
 		assert.Equal(t, test.expected.IsSkipped, actual.IsSkipped)
@@ -395,7 +536,8 @@ func TestParseResourceData(t *testing.T) {
           "name": "instance1",
           "provider_name": "registry.terraform.io/hashicorp/aws",
           "schema_version": 0,
-          "values": {}
+          "values": {},
+          "region": "eu-west-2"
 				},
 				{
 					"address": "aws_instance.instance2",
@@ -404,7 +546,8 @@ func TestParseResourceData(t *testing.T) {
           "name": "instance2",
           "provider_name": "registry.terraform.io/hashicorp/aws",
           "schema_version": 0,
-          "values": {}
+          "values": {},
+          "region": "eu-west-2"
         }
 			],
 			"child_modules": [
@@ -418,7 +561,8 @@ func TestParseResourceData(t *testing.T) {
 							"name": "nat1",
 							"provider_name": "registry.terraform.io/hashicorp/aws",
 							"schema_version": 0,
-							"values": {}
+							"values": {},
+							"region": "eu-west-2"
 						},
 						{
 							"address": "module.module1.aws_nat_gateway.nat2",
@@ -427,7 +571,8 @@ func TestParseResourceData(t *testing.T) {
 							"name": "nat2",
 							"provider_name": "registry.terraform.io/hashicorp/aws",
 							"schema_version": 0,
-							"values": {}
+							"values": {},
+							"region": "eu-west-2"
 						}
 					]
 				}
@@ -466,7 +611,7 @@ func TestParseResourceData(t *testing.T) {
 								"mode": "managed",
 								"type": "aws_nat_gateway",
 								"name": "nat1",
-								"provider_config_key": "module1:aws",
+								"provider_config_key": "aws",
 								"expressions": {}
 							},
               {
@@ -474,7 +619,7 @@ func TestParseResourceData(t *testing.T) {
 								"mode": "managed",
 								"type": "aws_nat_gateway",
 								"name": "nat2",
-								"provider_config_key": "module1:aws.europe",
+								"provider_config_key": "aws.europe",
 								"expressions": {}
 							}
 						]
@@ -523,39 +668,30 @@ func TestParseResourceData(t *testing.T) {
 		"module.module1.aws_nat_gateway.nat2": "eu-west-2",
 	}
 
-	p := NewParser(config.EmptyProjectContext())
-	actual := p.parseResourceData(false, providerConf, planVals, conf, vars)
+	p := NewParser(config.NewProjectContext(config.EmptyRunContext(), &config.Project{}, map[string]interface{}{}), true)
+	loader := NewConfLoader(conf)
+	actual := p.parseResourceData(false, loader, providerConf, planVals, vars)
 
 	for k, v := range actual {
 		assert.Equal(t, expected[k].Address, v.Address)
 		assert.Equal(t, expected[k].ProviderName, v.ProviderName)
 		assert.Equal(t, expected[k].Type, v.Type)
-		assert.Equal(t, expectedRegions[k], v.Get("region").String())
+
+		region := p.getRegion(loader, v, providerConf, vars)
+		assert.Equal(t, expectedRegions[k], region)
 	}
 }
 
 func TestParseReferences_plan(t *testing.T) {
-	vol1 := schema.NewResourceData(
-		"aws_ebs_volume",
-		"aws",
-		"aws_ebs_volume.volume1",
-		map[string]string{},
-		gjson.Result{
-			Type: gjson.JSON,
-			Raw:  `{}`,
-		},
-	)
+	vol1 := schema.NewResourceData("aws_ebs_volume", "aws", "aws_ebs_volume.volume1", nil, gjson.Result{
+		Type: gjson.JSON,
+		Raw:  `{}`,
+	})
 
-	snap1 := schema.NewResourceData(
-		"aws_ebs_snapshot",
-		"aws",
-		"aws_ebs_snapshot.snapshot1",
-		map[string]string{},
-		gjson.Result{
-			Type: gjson.JSON,
-			Raw:  `{}`,
-		},
-	)
+	snap1 := schema.NewResourceData("aws_ebs_snapshot", "aws", "aws_ebs_snapshot.snapshot1", nil, gjson.Result{
+		Type: gjson.JSON,
+		Raw:  `{}`,
+	})
 
 	resData := map[string]*schema.ResourceData{
 		vol1.Address:  vol1,
@@ -592,38 +728,26 @@ func TestParseReferences_plan(t *testing.T) {
 		}`,
 	}
 
-	p := NewParser(config.EmptyProjectContext())
-	p.parseReferences(resData, conf)
+	p := NewParser(config.NewProjectContext(config.EmptyRunContext(), &config.Project{}, map[string]interface{}{}), true)
+	p.parseReferences(resData, NewConfLoader(conf))
 
 	assert.Equal(t, []*schema.ResourceData{vol1}, resData["aws_ebs_snapshot.snapshot1"].References("volume_id"))
 }
 
 func TestParseReferences_state(t *testing.T) {
-	vol1 := schema.NewResourceData(
-		"aws_ebs_volume",
-		"aws",
-		"aws_ebs_volume.volume1",
-		map[string]string{},
-		gjson.Result{
-			Type: gjson.JSON,
-			Raw: `{
+	vol1 := schema.NewResourceData("aws_ebs_volume", "aws", "aws_ebs_volume.volume1", nil, gjson.Result{
+		Type: gjson.JSON,
+		Raw: `{
 				"id": "vol-12345"
 			}`,
-		},
-	)
+	})
 
-	snap1 := schema.NewResourceData(
-		"aws_ebs_snapshot",
-		"aws",
-		"aws_ebs_snapshot.snapshot1",
-		map[string]string{},
-		gjson.Result{
-			Type: gjson.JSON,
-			Raw: `{
+	snap1 := schema.NewResourceData("aws_ebs_snapshot", "aws", "aws_ebs_snapshot.snapshot1", nil, gjson.Result{
+		Type: gjson.JSON,
+		Raw: `{
 				"volume_id": "vol-12345"
 			}`,
-		},
-	)
+	})
 
 	resData := map[string]*schema.ResourceData{
 		vol1.Address:  vol1,
@@ -632,21 +756,59 @@ func TestParseReferences_state(t *testing.T) {
 
 	conf := gjson.Result{}
 
-	p := NewParser(config.EmptyProjectContext())
-	p.parseReferences(resData, conf)
+	p := NewParser(config.NewProjectContext(config.EmptyRunContext(), &config.Project{}, map[string]interface{}{}), true)
+	p.parseReferences(resData, NewConfLoader(conf))
 
 	assert.Equal(t, []*schema.ResourceData{vol1}, resData["aws_ebs_snapshot.snapshot1"].References("volume_id"))
 }
 
+func TestFixKnownModuleRefIssues(t *testing.T) {
+	bucket := schema.NewResourceData("aws_s3_bucket", "registry.terraform.io/hashicorp/aws", "module.bucket.aws_s3_bucket.this[0]", nil, gjson.Result{
+		Type: gjson.JSON,
+		Raw: `{
+				"id": "hcl-bucket-id"
+				"acl":"private",
+				"bucket":"my-bucket"
+	}`,
+	})
+
+	policy := schema.NewResourceData("aws_s3_bucket_policy", "registry.terraform.io/hashicorp/aws", "module.bucket.aws_s3_bucket_policy.this[0]", nil, gjson.Result{
+		Type: gjson.JSON,
+		Raw: `{
+				"id": "hcl-policy-id",
+				"bucket":"my-bucket",
+				"policy":"{}"
+	}`,
+	})
+
+	lifecycleConfiguration := schema.NewResourceData("aws_s3_bucket_lifecycle_configuration", "registry.terraform.io/hashicorp/aws", "aws_s3_bucket_lifecycle_configuration.bucket_lifecycle", nil, gjson.Result{
+		Type: gjson.JSON,
+		Raw: `{
+				"bucket": "hcl-policy-id"
+	         }`,
+	})
+
+	lifecycleConfiguration.AddReference("bucket", policy, []string{})
+
+	resData := map[string]*schema.ResourceData{
+		lifecycleConfiguration.Address: lifecycleConfiguration,
+		policy.Address:                 policy,
+		bucket.Address:                 bucket,
+	}
+
+	require.Equal(t, lifecycleConfiguration.Get("bucket").String(), "hcl-policy-id")
+	assert.Equal(t, lifecycleConfiguration.References("bucket")[0].Type, "aws_s3_bucket_policy")
+	fixKnownModuleRefIssues(resData)
+
+	assert.Equal(t, lifecycleConfiguration.Get("bucket").String(), "hcl-bucket-id")
+	assert.Equal(t, lifecycleConfiguration.References("bucket")[0].Get("id").String(), "hcl-bucket-id")
+	assert.Equal(t, lifecycleConfiguration.References("bucket")[0].Type, "aws_s3_bucket")
+}
+
 func TestParseKnownModuleRefs(t *testing.T) {
-	res := schema.NewResourceData(
-		"aws_autoscaling_group",
-		"registry.terraform.io/hashicorp/aws",
-		"module.worker_groups_launch_template.aws_autoscaling_group.workers_launch_template[0]",
-		nil,
-		gjson.Result{
-			Type: gjson.JSON,
-			Raw: `{
+	res := schema.NewResourceData("aws_autoscaling_group", "registry.terraform.io/hashicorp/aws", "module.worker_groups_launch_template.aws_autoscaling_group.workers_launch_template[0]", nil, gjson.Result{
+		Type: gjson.JSON,
+		Raw: `{
 				"capacity_rebalance":false,
 				"desired_capacity":6,
 				"enabled_metrics":null,
@@ -684,17 +846,11 @@ func TestParseKnownModuleRefs(t *testing.T) {
 				"wait_for_capacity_timeout":"10m",
 				"wait_for_elb_capacity":null,
 				"warm_pool":[]}`,
-		},
-	)
+	})
 
-	lt := schema.NewResourceData(
-		"aws_launch_template",
-		"registry.terraform.io/hashicorp/aws",
-		"module.worker_groups_launch_template.aws_launch_template.workers_launch_template[0]",
-		nil,
-		gjson.Result{
-			Type: gjson.JSON,
-			Raw: `{
+	lt := schema.NewResourceData("aws_launch_template", "registry.terraform.io/hashicorp/aws", "module.worker_groups_launch_template.aws_launch_template.workers_launch_template[0]", nil, gjson.Result{
+		Type: gjson.JSON,
+		Raw: `{
 				"block_device_mappings":[
 					{
 						"device_name":"/dev/xvda",
@@ -784,8 +940,7 @@ func TestParseKnownModuleRefs(t *testing.T) {
 				"update_default_version":false,
 				"vpc_security_group_ids":null
 			}`,
-		},
-	)
+	})
 
 	resData := map[string]*schema.ResourceData{
 		res.Address: res,
@@ -805,7 +960,7 @@ func TestParseKnownModuleRefs(t *testing.T) {
 	}
 	assert.Nil(t, resData[res.Address].References("launch_template"))
 
-	parseKnownModuleRefs(resData, conf)
+	parseKnownModuleRefs(resData, NewConfLoader(conf))
 
 	assert.NotNil(t, resData[res.Address].References("launch_template"))
 }
@@ -874,6 +1029,79 @@ func TestAddressModulePart(t *testing.T) {
 	}
 }
 
+func TestRemoveAddressCountIndex(t *testing.T) {
+	tests := []struct {
+		address  string
+		expected int
+	}{
+		{"aws_instance.my_instance", -1},
+		{"data.aws_instance.my_instance", -1},
+		{"aws_instance.my_instance[3]", 3},
+		{"data.aws_instance.my_instance[3]", 3},
+		{"aws_instance.my_instance[3]", 3},
+		{"data.aws_instance.my_instance[3]", 3},
+		// Modules
+		{"module.my_module.aws_instance.my_instance", -1},
+		{"module.my_module.data.aws_instance.my_instance", -1},
+		{"module.my_module.aws_instance.my_instance[3]", 3},
+		{"module.my_module.data.aws_instance.my_instance[3]", 3},
+		{"module.my_module.aws_instance.my_instance[3]", 3},
+		{"module.my_module.data.aws_instance.my_instance[3]", 3},
+		// Count modules
+		{"module.my_module[2].aws_instance.my_instance", -1},
+		{"module.my_module[2].data.aws_instance.my_instance", -1},
+		{"module.my_module[2].aws_instance.my_instance[3]", 3},
+		{"module.my_module[2].data.aws_instance.my_instance[3]", 3},
+		{"module.my_module[2].aws_instance.my_instance[3]", 3},
+		{"module.my_module[2].data.aws_instance.my_instance[3]", 3},
+		// Each resources
+		{"module.my_module[\"modindex.0\"].aws_instance.my_instance", -1},
+		{"module.my_module[\"modindex.0\"].data.aws_instance.my_instance", -1},
+		{"module.my_module[\"modindex.0\"].aws_instance.my_instance[\"index.1\"]", -1},
+		{"module.my_module[\"modindex.0\"].data.aws_instance.my_instance[\"index.1\"]", -1},
+		{"module.my_module[\"modindex.0\"].aws_instance.my_instance[\"index[1]\"]", -1},
+		{"module.my_module[\"modindex.0\"].data.aws_instance.my_instance[\"index[1]\"]", -1},
+	}
+
+	for _, test := range tests {
+		actual := addressCountIndex(test.address)
+		assert.Equal(t, test.expected, actual)
+	}
+}
+
+func TestAddressKey(t *testing.T) {
+	tests := []struct {
+		address  string
+		expected string
+	}{
+		{"aws_instance.my_instance", ""},
+		{"data.aws_instance.my_instance", ""},
+		{"aws_instance.my_instance[\"index.1\"]", "index.1"},
+		{"data.aws_instance.my_instance[\"index.1\"]", "index.1"},
+		{"aws_instance.my_instance[\"index[1]\"]", "index[1]"},
+		{"data.aws_instance.my_instance[\"index[1]\"]", "index[1]"},
+		// Modules
+		{"module.my_module.aws_instance.my_instance", ""},
+		{"module.my_module.data.aws_instance.my_instance", ""},
+		{"module.my_module.aws_instance.my_instance[\"index.1\"]", "index.1"},
+		{"module.my_module.data.aws_instance.my_instance[\"index.1\"]", "index.1"},
+		{"module.my_module.aws_instance.my_instance[\"index[1]\"]", "index[1]"},
+		{"module.my_module.data.aws_instance.my_instance[\"index[1]\"]", "index[1]"},
+		// Each modules
+		{"module.my_module[\"modindex.0\"].aws_instance.my_instance", ""},
+		{"module.my_module[\"modindex.0\"].data.aws_instance.my_instance", ""},
+		{"module.my_module[\"modindex.0\"].aws_instance.my_instance[\"index.1\"]", "index.1"},
+		{"module.my_module[\"modindex.0\"].data.aws_instance.my_instance[\"index.1\"]", "index.1"},
+		{"module.my_module[\"modindex.0\"].aws_instance.my_instance[\"index[1]\"]", "index[1]"},
+		{"module.my_module[\"modindex.0\"].data.aws_instance.my_instance[\"index[1]\"]", "index[1]"},
+	}
+
+	for _, test := range tests {
+		actual := addressKey(test.address)
+		assert.Equal(t, test.expected, actual)
+	}
+}
+
 func TestRemoveAddressArrayPart(t *testing.T) {
 	tests := []struct {
 		address  string
@@ -892,6 +1120,13 @@ func TestRemoveAddressArrayPart(t *testing.T) {
 		{"module.my_module.data.aws_instance.my_instance[\"index.1\"]", "data.aws_instance.my_instance"},
 		{"module.my_module.aws_instance.my_instance[\"index[1]\"]", "aws_instance.my_instance"},
 		{"module.my_module.data.aws_instance.my_instance[\"index[1]\"]", "data.aws_instance.my_instance"},
+		// Each modules
+		{"module.my_module[\"modindex.0\"].aws_instance.my_instance", "aws_instance.my_instance"},
+		{"module.my_module[\"modindex.0\"].data.aws_instance.my_instance", "data.aws_instance.my_instance"},
+		{"module.my_module[\"modindex.0\"].aws_instance.my_instance[\"index.1\"]", "aws_instance.my_instance"},
+		{"module.my_module[\"modindex.0\"].data.aws_instance.my_instance[\"index.1\"]", "data.aws_instance.my_instance"},
+		{"module.my_module[\"modindex.0\"].aws_instance.my_instance[\"index[1]\"]", "aws_instance.my_instance"},
+		{"module.my_module[\"modindex.0\"].data.aws_instance.my_instance[\"index[1]\"]", "data.aws_instance.my_instance"},
 	}
 
 	for _, test := range tests {

@@ -1,41 +1,22 @@
 package google
 
 import (
+	"github.com/infracost/infracost/internal/resources/google"
 	"github.com/infracost/infracost/internal/schema"
-	"github.com/shopspring/decimal"
 )
 
-func GetComputeVPNTunnelRegistryItem() *schema.RegistryItem {
+func getComputeVPNTunnelRegistryItem() *schema.RegistryItem {
 	return &schema.RegistryItem{
-		Name:  "google_compute_vpn_tunnel",
-		RFunc: NewComputeVPNTunnel,
+		Name:      "google_compute_vpn_tunnel",
+		CoreRFunc: NewComputeVPNTunnel,
 	}
 }
 
-func NewComputeVPNTunnel(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
-	region := d.Get("region").String()
-	return &schema.Resource{
-		Name: d.Address,
-		CostComponents: []*schema.CostComponent{
-			VPNTunnelInstance(region),
-		},
+func NewComputeVPNTunnel(d *schema.ResourceData) schema.CoreResource {
+	r := &google.ComputeVPNTunnel{
+		Address: d.Address,
+		Region:  d.Get("region").String(),
 	}
-}
 
-func VPNTunnelInstance(region string) *schema.CostComponent {
-	return &schema.CostComponent{
-		Name:           "VPN Tunnel",
-		Unit:           "hours",
-		UnitMultiplier: decimal.NewFromInt(1),
-		HourlyQuantity: decimalPtr(decimal.NewFromInt(1)),
-		ProductFilter: &schema.ProductFilter{
-			VendorName:    strPtr("gcp"),
-			Region:        strPtr(region),
-			Service:       strPtr("Compute Engine"),
-			ProductFamily: strPtr("Network"),
-			AttributeFilters: []*schema.AttributeFilter{
-				{Key: "resourceGroup", Value: strPtr("VPNTunnel")},
-			},
-		},
-	}
+	return r
 }

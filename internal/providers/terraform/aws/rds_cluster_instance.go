@@ -1,91 +1,37 @@
 package aws
 
 import (
-	"fmt"
+	"github.com/infracost/infracost/internal/resources/aws"
 	"github.com/infracost/infracost/internal/schema"
-	"github.com/shopspring/decimal"
-	"strings"
 )
 
-func GetRDSClusterInstanceRegistryItem() *schema.RegistryItem {
+func getRDSClusterInstanceRegistryItem() *schema.RegistryItem {
 	return &schema.RegistryItem{
-		Name:  "aws_rds_cluster_instance",
-		RFunc: NewRDSClusterInstance,
+		Name:                "aws_rds_cluster_instance",
+		CoreRFunc:           NewRDSClusterInstance,
+		ReferenceAttributes: []string{"cluster_identifier"},
 	}
 }
 
-func NewRDSClusterInstance(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
-	region := d.Get("region").String()
+func NewRDSClusterInstance(d *schema.ResourceData) schema.CoreResource {
+	piEnabled := d.Get("performance_insights_enabled").Bool()
+	piLongTerm := piEnabled && d.Get("performance_insights_retention_period").Int() > 7
 
-	instanceType := d.Get("instance_class").String()
-
-	var databaseEngine *string
-	switch d.Get("engine").String() {
-	case "aurora", "aurora-mysql", "":
-		databaseEngine = strPtr("Aurora MySQL")
-	case "aurora-postgresql":
-		databaseEngine = strPtr("Aurora PostgreSQL")
+	ioOptimized := false
+	clusterRefs := d.References("cluster_identifier")
+	if len(clusterRefs) > 0 {
+		ioOptimized = clusterRefs[0].Get("storage_type").String() == "aurora-iopt1"
 	}
 
-	costComponents := []*schema.CostComponent{
-		{
-			Name:           fmt.Sprintf("Database instance (%s, %s)", "on-demand", instanceType),
-			Unit:           "hours",
-			UnitMultiplier: decimal.NewFromInt(1),
-			HourlyQuantity: decimalPtr(decimal.NewFromInt(1)),
-			ProductFilter: &schema.ProductFilter{
-				VendorName:    strPtr("aws"),
-				Region:        strPtr(region),
-				Service:       strPtr("AmazonRDS"),
-				ProductFamily: strPtr("Database Instance"),
-				AttributeFilters: []*schema.AttributeFilter{
-					{Key: "instanceType", Value: strPtr(instanceType)},
-					{Key: "databaseEngine", Value: databaseEngine},
-				},
-			},
-			PriceFilter: &schema.PriceFilter{
-				PurchaseOption: strPtr("on_demand"),
-			},
-		},
+	r := &aws.RDSClusterInstance{
+		Address:                              d.Address,
+		Region:                               d.Get("region").String(),
+		InstanceClass:                        d.Get("instance_class").String(),
+		IOOptimized:                          ioOptimized,
+		Engine:                               d.Get("engine").String(),
+		Version:                              d.Get("engine_version").String(),
+		PerformanceInsightsEnabled:           piEnabled,
+		PerformanceInsightsLongTermRetention: piLongTerm,
 	}
-
-	if strings.HasPrefix(instanceType, "db.t3") {
-		instanceCPUCreditHours := decimal.Zero
-		if u != nil && u.Get("monthly_cpu_credit_hrs").Exists() {
-			instanceCPUCreditHours = decimal.NewFromInt(u.Get("monthly_cpu_credit_hrs").Int())
-		}
-
-		instanceVCPUCount := decimal.Zero
-		if u != nil && u.Get("vcpu_count").Exists() {
-			instanceVCPUCount = decimal.NewFromInt(u.Get("vcpu_count").Int())
-		}
-
-		if instanceCPUCreditHours.GreaterThan(decimal.NewFromInt(0)) {
-			cpuCreditQuantity := instanceVCPUCount.Mul(instanceCPUCreditHours)
-			costComponents = append(costComponents, rdsCPUCreditsCostComponent(region, databaseEngine, cpuCreditQuantity))
-		}
-	}
-
-	return &schema.Resource{
-		Name:           d.Address,
-		CostComponents: costComponents,
-	}
-}
-
-func rdsCPUCreditsCostComponent(region string, databaseEngine *string, vCPUCount decimal.Decimal) *schema.CostComponent {
-	return &schema.CostComponent{
-		Name:            "CPU credits",
-		Unit:            "vCPU-hours",
-		UnitMultiplier:  decimal.NewFromInt(1),
-		MonthlyQuantity: &vCPUCount,
-		ProductFilter: &schema.ProductFilter{
-			VendorName:    strPtr("aws"),
-			Region:        strPtr(region),
-			Service:       strPtr("AmazonRDS"),
-			ProductFamily: strPtr("CPU Credits"),
-			AttributeFilters: []*schema.AttributeFilter{
-				{Key: "databaseEngine", Value: databaseEngine},
-			},
-		},
-	}
+	return r
 }

@@ -4,11 +4,12 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/shopspring/decimal"
+	"github.com/tidwall/gjson"
+
+	"github.com/infracost/infracost/internal/logging"
 	"github.com/infracost/infracost/internal/schema"
 	"github.com/infracost/infracost/internal/usage"
-	"github.com/shopspring/decimal"
-	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
 )
 
 func GetAzureRMCDNEndpointRegistryItem() *schema.RegistryItem {
@@ -22,7 +23,7 @@ func GetAzureRMCDNEndpointRegistryItem() *schema.RegistryItem {
 }
 
 func NewAzureRMCDNEndpoint(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
-	region := regionToZone(lookupRegion(d, []string{}))
+	region := regionToCDNZone(d.Region)
 
 	var costComponents []*schema.CostComponent
 
@@ -34,7 +35,7 @@ func NewAzureRMCDNEndpoint(d *schema.ResourceData, u *schema.UsageData) *schema.
 	}
 
 	if len(strings.Split(sku, "_")) != 2 || strings.ToLower(sku) == "standard_chinacdn" {
-		log.Warnf("Unrecognized/unsupported CDN sku format for resource %s: %s", d.Address, sku)
+		logging.Logger.Warn().Msgf("Unrecognized/unsupported CDN sku format for resource %s: %s", d.Address, sku)
 		return nil
 	}
 
@@ -58,7 +59,7 @@ func NewAzureRMCDNEndpoint(d *schema.ResourceData, u *schema.UsageData) *schema.
 				region,
 				"Azure CDN from Microsoft",
 				"Standard",
-				"Rules",
+				"Rule",
 				"5",
 				decimalPtr(decimal.NewFromInt(int64(numberOfRules))),
 			))
@@ -232,9 +233,9 @@ func cdnCostComponent(name, unit, region, productName, skuName, meterName, start
 			Service:       strPtr("Content Delivery Network"),
 			ProductFamily: strPtr("Networking"),
 			AttributeFilters: []*schema.AttributeFilter{
-				{Key: "productName", ValueRegex: strPtr(fmt.Sprintf("/^%s$/i", productName))},
-				{Key: "skuName", ValueRegex: strPtr(fmt.Sprintf("/^%s$/i", skuName))},
-				{Key: "meterName", ValueRegex: strPtr(fmt.Sprintf("/^%s$/i", meterName))},
+				{Key: "productName", ValueRegex: regexPtr(fmt.Sprintf("^%s$", productName))},
+				{Key: "skuName", ValueRegex: regexPtr(fmt.Sprintf("^%s$", skuName))},
+				{Key: "meterName", ValueRegex: regexPtr(fmt.Sprintf("%s$", meterName))},
 			},
 		},
 		PriceFilter: &schema.PriceFilter{
@@ -242,57 +243,4 @@ func cdnCostComponent(name, unit, region, productName, skuName, meterName, start
 			StartUsageAmount: strPtr(startUsage),
 		},
 	}
-}
-
-func regionToZone(region string) string {
-	return map[string]string{
-		"westus":             "Zone 1",
-		"westus2":            "Zone 1",
-		"eastus":             "Zone 1",
-		"centralus":          "Zone 1",
-		"centraluseuap":      "Zone 1",
-		"southcentralus":     "Zone 1",
-		"northcentralus":     "Zone 1",
-		"westcentralus":      "Zone 1",
-		"eastus2":            "Zone 1",
-		"eastus2euap":        "Zone 1",
-		"brazilsouth":        "Zone 3",
-		"brazilus":           "Zone 3",
-		"northeurope":        "Zone 1",
-		"westeurope":         "Zone 1",
-		"eastasia":           "Zone 2",
-		"southeastasia":      "Zone 2",
-		"japanwest":          "Zone 2",
-		"japaneast":          "Zone 2",
-		"koreacentral":       "Zone 2",
-		"koreasouth":         "Zone 2",
-		"southindia":         "Zone 5",
-		"westindia":          "Zone 5",
-		"centralindia":       "Zone 5",
-		"australiaeast":      "Zone 4",
-		"australiasoutheast": "Zone 4",
-		"canadacentral":      "Zone 1",
-		"canadaeast":         "Zone 1",
-		"uksouth":            "Zone 1",
-		"ukwest":             "Zone 1",
-		"francecentral":      "Zone 1",
-		"francesouth":        "Zone 1",
-		"australiacentral":   "Zone 4",
-		"australiacentral2":  "Zone 4",
-		"uaecentral":         "Zone 1",
-		"uaenorth":           "Zone 1",
-		"southafricanorth":   "Zone 1",
-		"southafricawest":    "Zone 1",
-		"switzerlandnorth":   "Zone 1",
-		"switzerlandwest":    "Zone 1",
-		"germanynorth":       "Zone 1",
-		"germanywestcentral": "Zone 1",
-		"norwayeast":         "Zone 1",
-		"norwaywest":         "Zone 1",
-		"brazilsoutheast":    "Zone 3",
-		"westus3":            "Zone 1",
-		"eastusslv":          "Zone 1",
-		"swedencentral":      "Zone 1",
-		"swedensouth":        "Zone 1",
-	}[region]
 }

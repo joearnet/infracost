@@ -1,25 +1,21 @@
 package google
 
 import (
+	"github.com/infracost/infracost/internal/resources/google"
 	"github.com/infracost/infracost/internal/schema"
-	"github.com/shopspring/decimal"
 )
 
-func GetLoggingOrganizationSinkRegistryItem() *schema.RegistryItem {
+func getLoggingOrganizationSinkRegistryItem() *schema.RegistryItem {
 	return &schema.RegistryItem{
-		Name:  "google_logging_organization_sink",
-		RFunc: NewLoggingOrganizationSink,
+		Name:      "google_logging_organization_sink",
+		CoreRFunc: NewLoggingOrganizationSink,
 	}
 }
 
-func NewLoggingOrganizationSink(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
-	var loggingData *decimal.Decimal
-	if u != nil && u.Get("monthly_logging_data_gb").Exists() {
-		loggingData = decimalPtr(decimal.NewFromInt(u.Get("monthly_logging_data_gb").Int()))
+func NewLoggingOrganizationSink(d *schema.ResourceData) schema.CoreResource {
+	r := &google.Logging{
+		Address: d.Address,
 	}
 
-	return &schema.Resource{
-		Name:           d.Address,
-		CostComponents: loggingCostComponent(loggingData),
-	}
+	return r
 }

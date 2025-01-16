@@ -5,21 +5,24 @@ import (
 	"github.com/infracost/infracost/internal/schema"
 )
 
-func GetNATGatewayRegistryItem() *schema.RegistryItem {
+func getNATGatewayRegistryItem() *schema.RegistryItem {
 	return &schema.RegistryItem{
-		Name:  "aws_nat_gateway",
-		RFunc: NewNATGateway,
+		Name: "aws_nat_gateway",
+		ReferenceAttributes: []string{
+			"allocation_id",
+			"subnet_id",
+		},
+		CoreRFunc: NewNATGateway,
 	}
 }
 
-func NewNATGateway(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
+func NewNATGateway(d *schema.ResourceData) schema.CoreResource {
 	region := d.Get("region").String()
 
 	a := &aws.NATGateway{
 		Address: d.Address,
 		Region:  region,
 	}
-	a.PopulateUsage(u)
 
-	return a.BuildResource()
+	return a
 }

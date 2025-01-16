@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/infracost/infracost/internal/schema"
-	"github.com/infracost/infracost/internal/usage"
 	"github.com/shopspring/decimal"
 	"github.com/tidwall/gjson"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
+
+	"github.com/infracost/infracost/internal/schema"
+	"github.com/infracost/infracost/internal/usage"
 )
 
 func GetAzureRMSearchServiceRegistryItem() *schema.RegistryItem {
@@ -21,12 +24,13 @@ func GetAzureRMSearchServiceRegistryItem() *schema.RegistryItem {
 }
 
 func NewAzureRMSearchService(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
-	region := lookupRegion(d, []string{})
+	region := d.Region
 	costComponents := []*schema.CostComponent{}
 
 	sku := strings.ToLower(d.Get("sku").String())
 	if sku == "free" {
 		return &schema.Resource{
+			Name:      d.Address,
 			NoPrice:   true,
 			IsSkipped: true,
 		}
@@ -53,7 +57,7 @@ func NewAzureRMSearchService(d *schema.ResourceData, u *schema.UsageData) *schem
 	var skuName string
 	skuElems := strings.Split(sku, " ")
 	for _, v := range skuElems {
-		skuName += strings.Title(v) + " "
+		skuName += cases.Title(language.English).String(v) + " "
 	}
 	unitName := "unit"
 	if units.GreaterThan(decimal.NewFromInt(1)) {

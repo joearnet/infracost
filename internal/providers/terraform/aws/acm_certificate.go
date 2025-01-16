@@ -1,32 +1,21 @@
 package aws
 
 import (
+	"github.com/infracost/infracost/internal/resources/aws"
 	"github.com/infracost/infracost/internal/schema"
-	"github.com/shopspring/decimal"
 )
 
-func GetACMCertificate() *schema.RegistryItem {
+func getACMCertificate() *schema.RegistryItem {
 	return &schema.RegistryItem{
-		Name:  "aws_acm_certificate",
-		RFunc: NewACMCertificate,
+		Name:      "aws_acm_certificate",
+		CoreRFunc: NewACMCertificate,
 	}
 }
-
-func NewACMCertificate(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
-	region := d.Get("region").String()
-
-	if d.Get("certificate_authority_arn").Exists() {
-		one := decimal.NewFromInt(1)
-		return &schema.Resource{
-			Name: d.Address,
-			CostComponents: []*schema.CostComponent{
-				certificateCostComponent(region, "Certificate", "0", &one),
-			},
-		}
+func NewACMCertificate(d *schema.ResourceData) schema.CoreResource {
+	r := &aws.ACMCertificate{
+		Address:                 d.Address,
+		Region:                  d.Get("region").String(),
+		CertificateAuthorityARN: d.Get("certificate_authority_arn").String(),
 	}
-
-	return &schema.Resource{
-		NoPrice:   true,
-		IsSkipped: true,
-	}
+	return r
 }

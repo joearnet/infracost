@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -14,10 +14,10 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	log "github.com/sirupsen/logrus"
 	"golang.org/x/mod/semver"
 
 	"github.com/infracost/infracost/internal/config"
+	"github.com/infracost/infracost/internal/logging"
 	"github.com/infracost/infracost/internal/version"
 )
 
@@ -34,7 +34,7 @@ func CheckForUpdate(ctx *config.RunContext) (*Info, error) {
 	// Check cache for the latest version
 	cachedLatestVersion, err := checkCachedLatestVersion(ctx)
 	if err != nil {
-		log.Debugf("error getting cached latest version: %v", err)
+		logging.Logger.Debug().Msgf("error getting cached latest version: %v", err)
 	}
 
 	// Nothing to do if the current version is the latest cached version
@@ -45,7 +45,7 @@ func CheckForUpdate(ctx *config.RunContext) (*Info, error) {
 	isBrew, err := isBrewInstall()
 	if err != nil {
 		// don't fail if we can't detect brew, just fallback to other update method
-		log.Debugf("error checking if executable was installed via brew: %v", err)
+		logging.Logger.Debug().Msgf("error checking if executable was installed via brew: %v", err)
 	}
 
 	var cmd string
@@ -75,7 +75,7 @@ func CheckForUpdate(ctx *config.RunContext) (*Info, error) {
 	if latestVersion != cachedLatestVersion {
 		err := setCachedLatestVersion(ctx, latestVersion)
 		if err != nil {
-			log.Debugf("error saving cached latest version: %v", err)
+			logging.Logger.Debug().Msgf("error saving cached latest version: %v", err)
 		}
 	}
 
@@ -142,7 +142,11 @@ func getLatestBrewVersion() (string, error) {
 		return "", err
 	}
 
-	body, err := ioutil.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", errors.Errorf("Error getting latest version: %s", resp.Status)
+	}
+
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
@@ -172,7 +176,7 @@ func getLatestGitHubVersion() (string, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}

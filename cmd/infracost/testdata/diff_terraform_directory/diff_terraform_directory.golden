@@ -1,5 +1,7 @@
+Key: * usage cost, ~ changed, + added, - removed
 
-Project: infracost/infracost/examples/terraform
+──────────────────────────────────
+Project: main
 
 + aws_instance.web_app
   +$743
@@ -10,7 +12,7 @@ Project: infracost/infracost/examples/terraform
     + root_block_device
     
         + Storage (general purpose SSD, gp2)
-          +$5.00
+          +$5
 
     + ebs_block_device[0]
     
@@ -18,7 +20,7 @@ Project: infracost/infracost/examples/terraform
           +$125
     
         + Provisioned IOPS
-          +$52.00
+          +$52
 
 + aws_lambda_function.hello_world
   Monthly cost depends on usage
@@ -27,14 +29,31 @@ Project: infracost/infracost/examples/terraform
       Monthly cost depends on usage
         +$0.20 per 1M requests
 
-    + Duration
+    + Ephemeral storage
+      Monthly cost depends on usage
+        +$0.0000000309 per GB-seconds
+
+    + Duration (first 6B)
       Monthly cost depends on usage
         +$0.0000166667 per GB-seconds
 
 Monthly cost change for infracost/infracost/examples/terraform
-Amount:  +$743 ($0.00 -> $743)
+Amount:  +$743 ($0.00 → $743)
 
-----------------------------------
-Key: ~ changed, + added, - removed
+──────────────────────────────────
+Key: * usage cost, ~ changed, + added, - removed
 
-To estimate usage-based resources use --usage-file, see https://infracost.io/usage-file
+*Usage costs can be estimated by updating Infracost Cloud settings, see docs for other options.
+
+2 cloud resources were detected:
+∙ 2 were estimated
+
+Infracost estimate: Monthly estimate increased by $743 ↑
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┓
+┃ Changed project                                    ┃ Baseline cost ┃ Usage cost* ┃ Total change ┃
+┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╋━━━━━━━━━━━━━━━╋━━━━━━━━━━━━━╋━━━━━━━━━━━━━━┫
+┃ infracost/infracost/examples/terraform             ┃         +$743 ┃           - ┃        +$743 ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┻━━━━━━━━━━━━━━━┻━━━━━━━━━━━━━┻━━━━━━━━━━━━━━┛
+
+Err:
+

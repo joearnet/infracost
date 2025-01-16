@@ -5,58 +5,88 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/pkg/errors"
+
 	"github.com/infracost/infracost/internal/clierror"
 	"github.com/infracost/infracost/internal/config"
+	"github.com/infracost/infracost/internal/logging"
 	"github.com/infracost/infracost/internal/schema"
 	"github.com/infracost/infracost/internal/ui"
-	"github.com/pkg/errors"
-	log "github.com/sirupsen/logrus"
 )
 
 type PlanProvider struct {
 	*DirProvider
-	Path           string
-	cachedPlanJSON []byte
+	Path                 string
+	cachedPlanJSON       []byte
+	includePastResources bool
 }
 
-func NewPlanProvider(ctx *config.ProjectContext) schema.Provider {
-	dirProvider := NewDirProvider(ctx).(*DirProvider)
+func NewPlanProvider(ctx *config.ProjectContext, includePastResources bool) schema.Provider {
+	dirProvider := NewDirProvider(ctx, includePastResources).(*DirProvider)
 
 	return &PlanProvider{
-		DirProvider: dirProvider,
-		Path:        ctx.ProjectConfig.Path,
+		DirProvider:          dirProvider,
+		Path:                 ctx.ProjectConfig.Path,
+		includePastResources: includePastResources,
 	}
 }
 
+func (p *PlanProvider) ProjectName() string {
+	return config.CleanProjectName(p.ctx.ProjectConfig.Path)
+}
+
+func (p *PlanProvider) VarFiles() []string {
+	return nil
+}
+
+func (p *PlanProvider) RelativePath() string {
+	return p.ctx.ProjectConfig.Path
+}
+
 func (p *PlanProvider) Type() string {
-	return "terraform_plan"
+	return "terraform_plan_binary"
 }
 
 func (p *PlanProvider) DisplayType() string {
-	return "Terraform plan file"
+	return "Terraform plan binary file"
 }
 
-func (p *PlanProvider) LoadResources(usage map[string]*schema.UsageData) ([]*schema.Project, error) {
+func (p *PlanProvider) LoadResources(usage schema.UsageMap) (projects []*schema.Project, err error) {
 	j, err := p.generatePlanJSON()
 	if err != nil {
 		return []*schema.Project{}, err
 	}
 
-	metadata := config.DetectProjectMetadata(p.ctx.ProjectConfig.Path)
+	logging.Logger.Debug().Msg("Extracting only cost-related params from terraform")
+	defer func() {
+		if err != nil {
+			logging.Logger.Debug().Err(err).Msg("Error running plan provider")
+		} else {
+			logging.Logger.Debug().Msg("Finished running plan provider")
+		}
+	}()
+
+	metadata := schema.DetectProjectMetadata(p.ctx.ProjectConfig.Path)
 	metadata.Type = p.Type()
 	p.AddMetadata(metadata)
-	name := schema.GenerateProjectName(metadata, p.ctx.RunContext.Config.EnableDashboard)
+	name := p.ctx.ProjectConfig.Name
+	if name == "" {
+		name = metadata.GenerateProjectName(p.ctx.RunContext.VCSMetadata.Remote, p.ctx.RunContext.IsCloudEnabled())
+	}
 
 	project := schema.NewProject(name, metadata)
-	parser := NewParser(p.ctx)
+	parser := NewParser(p.ctx, p.includePastResources)
 
-	pastResources, resources, err := parser.parseJSON(j, usage)
+	j, _ = StripSetupTerraformWrapper(j)
+	parsedConf, err := parser.parseJSON(j, usage)
 	if err != nil {
 		return []*schema.Project{project}, errors.Wrap(err, "Error parsing Terraform JSON")
 	}
 
-	project.PastResources = pastResources
-	project.Resources = resources
+	project.AddProviderMetadata(parsedConf.ProviderMetadata)
+
+	project.PartialPastResources = parsedConf.PastResources
+	project.PartialResources = parsedConf.CurrentResources
 
 	return []*schema.Project{project}, nil
 }
@@ -70,7 +100,7 @@ func (p *PlanProvider) generatePlanJSON() ([]byte, error) {
 	planPath := filepath.Base(p.Path)
 
 	if !IsTerraformDir(dir) {
-		log.Debugf("%s is not a Terraform directory, checking current working directory", dir)
+		logging.Logger.Debug().Msgf("%s is not a Terraform directory, checking current working directory", dir)
 		dir, err := os.Getwd()
 		if err != nil {
 			return []byte{}, err
@@ -87,7 +117,7 @@ func (p *PlanProvider) generatePlanJSON() ([]byte, error) {
 				"and then run Infracost with",
 				ui.PrimaryString("--path=plan.json"),
 			)
-			return []byte{}, clierror.NewSanitizedError(errors.New(m), "Could not detect Terraform directory for plan file")
+			return []byte{}, clierror.NewCLIError(errors.New(m), "Could not detect Terraform directory for plan file")
 		}
 	}
 
@@ -104,8 +134,9 @@ func (p *PlanProvider) generatePlanJSON() ([]byte, error) {
 		defer os.Remove(opts.TerraformConfigFile)
 	}
 
-	spinner := ui.NewSpinner("Running terraform show", p.spinnerOpts)
-	j, err := p.runShow(opts, spinner, planPath)
+	logging.Logger.Debug().Msg("Running terraform show")
+
+	j, err := p.runShow(opts, planPath, false)
 	if err == nil {
 		p.cachedPlanJSON = j
 	}

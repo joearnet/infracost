@@ -3,19 +3,18 @@ package ui
 import (
 	"fmt"
 	"io"
-	"os"
 
-	"github.com/infracost/infracost/internal/version"
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
+
+	"github.com/infracost/infracost/internal/config"
+	"github.com/infracost/infracost/internal/logging"
+	"github.com/infracost/infracost/internal/version"
 )
 
-func PrintSuccess(w io.Writer, msg string) {
-	fmt.Fprintf(w, "%s %s\n", SuccessString("Success:"), msg)
-}
-
-func PrintSuccessf(w io.Writer, msg string, a ...interface{}) {
-	PrintSuccess(w, fmt.Sprintf(msg, a...))
-}
+// WriteWarningFunc defines an interface that writes the provided msg as a warning
+// to an underlying writer.
+type WriteWarningFunc func(msg string)
 
 func PrintError(w io.Writer, msg string) {
 	fmt.Fprintf(w, "%s %s\n", ErrorString("Error:"), msg)
@@ -25,30 +24,35 @@ func PrintErrorf(w io.Writer, msg string, a ...interface{}) {
 	PrintError(w, fmt.Sprintf(msg, a...))
 }
 
-func PrintWarning(w io.Writer, msg string) {
-	fmt.Fprintf(w, "%s %s\n", WarningString("Warning:"), msg)
-}
-
-func PrintWarningf(w io.Writer, msg string, a ...interface{}) {
-	PrintWarning(w, fmt.Sprintf(msg, a...))
-}
-
 func PrintUsage(cmd *cobra.Command) {
 	cmd.SetOut(cmd.ErrOrStderr())
 	_ = cmd.Help()
 	cmd.Println("")
 }
 
-func PrintUnexpectedError(err interface{}, stack string) {
-	msg := fmt.Sprintf("\n%s %s\n\n%s\n%s\nEnvironment:\n%s\n\n%s %s\n",
-		ErrorString("Error:"),
+var (
+	githubIssuesLink = LinkString("https://github.com/infracost/infracost/issues/new")
+
+	stackErrorMsg = "An unexpected error occurred. We've been notified of it and will investigate it soon. If you would like to follow-up, please copy the above output and create an issue at:"
+)
+
+// PrintUnexpectedErrorStack prints a full stack trace of a fatal error.
+func PrintUnexpectedErrorStack(err error) {
+	logging.Logger.Error().Msgf("%s\n\n%s\nEnvironment:\n%s\n\n%s %s\n",
 		"An unexpected error occurred",
 		err,
-		stack,
 		fmt.Sprintf("Infracost %s", version.Version),
-		"Please copy the above output and create a new issue at",
-		LinkString("https://github.com/infracost/infracost/issues/new"),
+		stackErrorMsg,
+		githubIssuesLink,
 	)
+}
 
-	fmt.Fprint(os.Stderr, msg)
+func ProjectDisplayName(ctx *config.RunContext, name string) string {
+	return FormatIfNotCI(ctx, func(s string) string {
+		return color.BlueString(BoldString(s))
+	}, name)
+}
+
+func DirectoryDisplayName(ctx *config.RunContext, name string) string {
+	return FormatIfNotCI(ctx, UnderlineString, name)
 }

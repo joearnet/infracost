@@ -5,9 +5,10 @@ import (
 	"testing"
 
 	resources "github.com/infracost/infracost/internal/resources/aws"
+	"github.com/stretchr/testify/assert"
 )
 
-func stubDescribeImages(stub *stubbedAWS, ami string, usageOp string) {
+func stubEC2DescribeImages(stub *stubbedAWS, ami string, usageOp string) {
 	body := fmt.Sprintf(`Action=DescribeImages&ImageId.1=%s`, ami)
 	response := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 		<DescribeImagesResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
@@ -53,11 +54,11 @@ func TestInstanceOS(t *testing.T) {
 
 	for _, test := range tests {
 		ami, op, os := test[0], test[1], test[2]
-		stubDescribeImages(stub, ami, op)
+		stubEC2DescribeImages(stub, ami, op)
 
 		args := resources.Instance{AMI: ami}
 		resource := args.BuildResource()
 		estimates := newEstimates(stub.ctx, t, resource)
-		estimates.mustHave("operating_system", os)
+		assert.Equal(t, os, estimates.usage["operating_system"])
 	}
 }

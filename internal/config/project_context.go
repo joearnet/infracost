@@ -1,120 +1,72 @@
 package config
 
 import (
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strings"
+	"context"
+	"sync"
 
-	"github.com/infracost/infracost/internal/schema"
-	log "github.com/sirupsen/logrus"
+	"github.com/rs/zerolog"
+
+	"github.com/infracost/infracost/internal/logging"
 )
+
+type ProjectContexter interface {
+	ProjectContext() map[string]interface{}
+}
 
 type ProjectContext struct {
 	RunContext    *RunContext
 	ProjectConfig *Project
-	contextVals   map[string]interface{}
+	logger        zerolog.Logger
+	ContextValues *ContextValues
+	mu            *sync.RWMutex
+
+	UsingCache bool
+	CacheErr   string
 }
 
-func NewProjectContext(runCtx *RunContext, projectCfg *Project) *ProjectContext {
+func NewProjectContext(runCtx *RunContext, projectCfg *Project, logFields interface{}) *ProjectContext {
+	ctx := logging.Logger.With().
+		Str("project_name", projectCfg.Name).
+		Str("project_path", projectCfg.Path)
+
+	if logFields != nil {
+		switch v := logFields.(type) {
+		case context.Context:
+			ctx = ctx.Ctx(v)
+		default:
+			ctx = ctx.Fields(v)
+		}
+	}
+
+	contextLogger := ctx.Logger()
+
 	return &ProjectContext{
 		RunContext:    runCtx,
 		ProjectConfig: projectCfg,
-		contextVals:   map[string]interface{}{},
+		logger:        contextLogger,
+		ContextValues: NewContextValues(map[string]interface{}{}),
+		mu:            &sync.RWMutex{},
 	}
 }
 
-func EmptyProjectContext() *ProjectContext {
-	return &ProjectContext{
-		RunContext:    EmptyRunContext(),
-		ProjectConfig: &Project{},
-		contextVals:   map[string]interface{}{},
+func (c *ProjectContext) SetProjectType(projectType string) {
+	c.ContextValues.SetValue("project_type", projectType)
+	var projectTypes []interface{}
+	if t, ok := c.RunContext.ContextValues.GetValue("projectTypes"); ok {
+		projectTypes = t.([]interface{})
 	}
+
+	projectTypes = append(projectTypes, projectType)
+	c.RunContext.ContextValues.SetValue("projectTypes", projectTypes)
 }
 
-func (c *ProjectContext) SetContextValue(key string, value interface{}) {
-	c.contextVals[key] = value
+func (c *ProjectContext) Logger() zerolog.Logger {
+	return c.logger
 }
 
-func (c *ProjectContext) ContextValues() map[string]interface{} {
-	return c.contextVals
-}
-
-func DetectProjectMetadata(path string) *schema.ProjectMetadata {
-	vcsRepoURL := os.Getenv("INFRACOST_VCS_REPOSITORY_URL")
-	vcsSubPath := os.Getenv("INFRACOST_VCS_SUB_PATH")
-	vcsPullRequestURL := os.Getenv("INFRACOST_VCS_PULL_REQUEST_URL")
-	terraformWorkspace := os.Getenv("INFRACOST_TERRAFORM_WORKSPACE")
-
-	if vcsRepoURL == "" {
-		vcsRepoURL = gitRepo(path)
+func (c *ProjectContext) SetFrom(d ProjectContexter) {
+	m := d.ProjectContext()
+	for k, v := range m {
+		c.ContextValues.SetValue(k, v)
 	}
-
-	if vcsRepoURL != "" && vcsSubPath == "" {
-		vcsSubPath = gitSubPath(path)
-	}
-
-	return &schema.ProjectMetadata{
-		Path:               path,
-		VCSRepoURL:         vcsRepoURL,
-		VCSSubPath:         vcsSubPath,
-		VCSPullRequestURL:  vcsPullRequestURL,
-		TerraformWorkspace: terraformWorkspace,
-	}
-}
-
-func gitRepo(path string) string {
-	log.Debugf("Checking if %s is a git repo", path)
-	cmd := exec.Command("git", "ls-remote", "--get-url")
-
-	if isDir(path) {
-		cmd.Dir = path
-	} else {
-		cmd.Dir = filepath.Dir(path)
-	}
-
-	out, err := cmd.Output()
-	if err != nil {
-		log.Debugf("Could not detect a git repo at %s", path)
-		return ""
-	}
-	return strings.Split(string(out), "\n")[0]
-}
-
-func gitSubPath(path string) string {
-	topLevel, err := gitToplevel(path)
-	if err != nil {
-		log.Debugf("Could not get git top level directory for %s", path)
-		return ""
-	}
-
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		log.Debugf("Could not get absolute path for %s", path)
-		return ""
-	}
-
-	subPath, err := filepath.Rel(topLevel, absPath)
-	if err != nil {
-		log.Debugf("Could not get relative path for %s from %s", absPath, topLevel)
-		return ""
-	}
-
-	return subPath
-}
-
-func gitToplevel(path string) (string, error) {
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
-
-	if isDir(path) {
-		cmd.Dir = path
-	} else {
-		cmd.Dir = filepath.Dir(path)
-	}
-
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.Split(string(out), "\n")[0], nil
 }

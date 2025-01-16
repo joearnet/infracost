@@ -1,5 +1,6 @@
 provider "google" {
   credentials = "{\"type\":\"service_account\"}"
+  project     = "my-project"
   region      = "us-central1"
 }
 
@@ -183,6 +184,29 @@ resource "google_container_cluster" "with_node_pools_regional_withUsage" {
   }
 }
 
+resource "google_container_cluster" "with_unsupported_node_pool" {
+  name     = "with-node-pools-regional"
+  location = "us-central1"
+
+  node_pool {
+    node_count = 2
+
+    node_config {
+      machine_type = "e2-custom"
+    }
+  }
+
+  node_pool {
+    node_count = 4
+
+    node_config {
+      machine_type = "n1-standard-16"
+      preemptible  = true
+    }
+  }
+}
+
+
 resource "google_container_cluster" "with_node_pools_node_locations_withUsage" {
   name     = "with-node-pools-regional"
   location = "us-central1"
@@ -212,4 +236,18 @@ resource "google_container_cluster" "with_node_pools_node_locations_withUsage" {
       preemptible  = true
     }
   }
+}
+
+resource "google_container_cluster" "autopilot" {
+  name     = "autopilot"
+  location = "us-central1"
+
+  enable_autopilot = true
+}
+
+resource "google_container_cluster" "autopilot_with_usage" {
+  name     = "autopilot-with-usage"
+  location = "us-central1"
+
+  enable_autopilot = true
 }

@@ -1,22 +1,20 @@
 package azure
 
 import (
+	"github.com/infracost/infracost/internal/resources/azure"
 	"github.com/infracost/infracost/internal/schema"
 )
 
-func GetAzureRMPrivateDNSptrRecordRegistryItem() *schema.RegistryItem {
+func getPrivateDNSPTRRecordRegistryItem() *schema.RegistryItem {
 	return &schema.RegistryItem{
-		Name:  "azurerm_private_dns_ptr_record",
-		RFunc: NewAzureRMPrivateDNSptrRecord,
+		Name:      "azurerm_private_dns_ptr_record",
+		CoreRFunc: NewPrivateDNSPTRRecord,
 		ReferenceAttributes: []string{
 			"resource_group_name",
 		},
 	}
 }
-
-func NewAzureRMPrivateDNSptrRecord(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
-	return &schema.Resource{
-		Name:           d.Address,
-		CostComponents: dnsQueriesCostComponent(d, u),
-	}
+func NewPrivateDNSPTRRecord(d *schema.ResourceData) schema.CoreResource {
+	r := &azure.PrivateDNSPTRRecord{Address: d.Address, Region: d.Region}
+	return r
 }

@@ -57,11 +57,11 @@ resource "azurerm_cosmosdb_account" "continuous_backup" {
 }
 
 resource "azurerm_cosmosdb_account" "multi-master_backup2copies" {
-  name                            = "tfex-cosmosdb-account"
-  resource_group_name             = azurerm_resource_group.example.name
-  location                        = azurerm_resource_group.example.location
-  offer_type                      = "Standard"
-  enable_multiple_write_locations = true
+  name                = "tfex-cosmosdb-account"
+  resource_group_name = azurerm_resource_group.example.name
+  location            = azurerm_resource_group.example.location
+  offer_type          = "Standard"
+
 
   consistency_policy {
     consistency_level = "Strong"
@@ -95,7 +95,7 @@ resource "azurerm_cosmosdb_gremlin_graph" "serverless" {
   partition_key_path  = "/Example"
 
   index_policy {
-    indexing_mode = "Consistent"
+    indexing_mode = "consistent"
   }
 }
 
@@ -110,7 +110,7 @@ resource "azurerm_cosmosdb_gremlin_graph" "non-usage_autoscale" {
   }
 
   index_policy {
-    indexing_mode = "Consistent"
+    indexing_mode = "consistent"
   }
 }
 
@@ -123,7 +123,7 @@ resource "azurerm_cosmosdb_gremlin_graph" "provisioned" {
   throughput          = 500
 
   index_policy {
-    indexing_mode = "Consistent"
+    indexing_mode = "consistent"
   }
 }
 
@@ -138,7 +138,7 @@ resource "azurerm_cosmosdb_gremlin_graph" "autoscale" {
   }
 
   index_policy {
-    indexing_mode = "Consistent"
+    indexing_mode = "consistent"
   }
 }
 
@@ -151,6 +151,6 @@ resource "azurerm_cosmosdb_gremlin_graph" "mutli-master_backup2copies" {
   throughput          = 1000
 
   index_policy {
-    indexing_mode = "Consistent"
+    indexing_mode = "consistent"
   }
 }

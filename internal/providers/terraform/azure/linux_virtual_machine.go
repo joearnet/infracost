@@ -1,78 +1,35 @@
 package azure
 
 import (
-	"fmt"
-	"strings"
-
+	"github.com/infracost/infracost/internal/resources/azure"
 	"github.com/infracost/infracost/internal/schema"
-
-	"github.com/shopspring/decimal"
 )
 
-func GetAzureRMLinuxVirtualMachineRegistryItem() *schema.RegistryItem {
+func getLinuxVirtualMachineRegistryItem() *schema.RegistryItem {
 	return &schema.RegistryItem{
-		Name:  "azurerm_linux_virtual_machine",
-		RFunc: NewAzureRMLinuxVirtualMachine,
+		Name:      "azurerm_linux_virtual_machine",
+		CoreRFunc: NewAzureLinuxVirtualMachine,
 		Notes: []string{
 			"Non-standard images such as RHEL are not supported.",
 			"Low priority, Spot and Reserved instances are not supported.",
 		},
 	}
 }
-
-func NewAzureRMLinuxVirtualMachine(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
-	region := lookupRegion(d, []string{})
-
-	instanceType := d.Get("size").String()
-
-	costComponents := []*schema.CostComponent{linuxVirtualMachineCostComponent(region, instanceType)}
-
-	if d.Get("additional_capabilities.0.ultra_ssd_enabled").Bool() {
-		costComponents = append(costComponents, ultraSSDReservationCostComponent(region))
+func NewAzureLinuxVirtualMachine(d *schema.ResourceData) schema.CoreResource {
+	r := &azure.LinuxVirtualMachine{
+		Address:         d.Address,
+		Region:          d.Region,
+		Size:            d.Get("size").String(),
+		UltraSSDEnabled: d.Get("additional_capabilities.0.ultra_ssd_enabled").Bool(),
 	}
 
-	subResources := make([]*schema.Resource, 0)
-
-	osDisk := osDiskSubResource(region, d, u)
-	if osDisk != nil {
-		subResources = append(subResources, osDisk)
+	if len(d.Get("os_disk").Array()) > 0 {
+		storageData := d.Get("os_disk").Array()[0]
+		r.OSDiskData = &azure.ManagedDiskData{
+			DiskType:   storageData.Get("storage_account_type").String(),
+			DiskSizeGB: storageData.Get("disk_size_gb").Int(),
+		}
 	}
 
-	return &schema.Resource{
-		Name:           d.Address,
-		CostComponents: costComponents,
-		SubResources:   subResources,
-	}
-}
-
-func linuxVirtualMachineCostComponent(region string, instanceType string) *schema.CostComponent {
-	purchaseOption := "Consumption"
-	purchaseOptionLabel := "pay as you go"
-
-	productNameRe := "/Virtual Machines .* Series$/"
-	if strings.HasPrefix(instanceType, "Basic_") {
-		productNameRe = "/Virtual Machines .* Series Basic$/"
-	}
-
-	return &schema.CostComponent{
-		Name:           fmt.Sprintf("Instance usage (%s, %s)", purchaseOptionLabel, instanceType),
-		Unit:           "hours",
-		UnitMultiplier: decimal.NewFromInt(1),
-		HourlyQuantity: decimalPtr(decimal.NewFromInt(1)),
-		ProductFilter: &schema.ProductFilter{
-			VendorName:    strPtr("azure"),
-			Region:        strPtr(region),
-			Service:       strPtr("Virtual Machines"),
-			ProductFamily: strPtr("Compute"),
-			AttributeFilters: []*schema.AttributeFilter{
-				{Key: "skuName", ValueRegex: strPtr("/^(?!.*(Low Priority|Spot)$).*$/i")},
-				{Key: "armSkuName", ValueRegex: strPtr(fmt.Sprintf("/^%s$/i", instanceType))},
-				{Key: "productName", ValueRegex: strPtr(productNameRe)},
-			},
-		},
-		PriceFilter: &schema.PriceFilter{
-			PurchaseOption: strPtr(purchaseOption),
-			Unit:           strPtr("1 Hour"),
-		},
-	}
+	return r
 }

@@ -1,26 +1,21 @@
 package aws
 
 import (
+	"github.com/infracost/infracost/internal/resources/aws"
 	"github.com/infracost/infracost/internal/schema"
 )
 
-func GetNewKMSExternalKeyRegistryItem() *schema.RegistryItem {
+func getNewKMSExternalKeyRegistryItem() *schema.RegistryItem {
 	return &schema.RegistryItem{
-		Name:  "aws_kms_external_key",
-		RFunc: NewKMSExternalKey,
+		Name:      "aws_kms_external_key",
+		CoreRFunc: NewKMSExternalKey,
 	}
 }
 
-func NewKMSExternalKey(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
-
-	region := d.Get("region").String()
-
-	costComponents := []*schema.CostComponent{
-		CustomerMasterKeyCostComponent(region),
+func NewKMSExternalKey(d *schema.ResourceData) schema.CoreResource {
+	r := &aws.KMSExternalKey{
+		Address: d.Address,
+		Region:  d.Get("region").String(),
 	}
-
-	return &schema.Resource{
-		Name:           d.Address,
-		CostComponents: costComponents,
-	}
+	return r
 }

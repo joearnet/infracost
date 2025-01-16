@@ -2,7 +2,7 @@
 
 __infracost_debug()
 {
-    if [[ -n ${BASH_COMP_DEBUG_FILE} ]]; then
+    if [[ -n ${BASH_COMP_DEBUG_FILE:-} ]]; then
         echo "$*" >> "${BASH_COMP_DEBUG_FILE}"
     fi
 }
@@ -112,7 +112,7 @@ __infracost_handle_go_custom_completion()
         $filteringCmd
     elif [ $((directive & shellCompDirectiveFilterDirs)) -ne 0 ]; then
         # File completion for directories only
-        local subDir
+        local subdir
         # Use printf to strip any trailing newline
         subdir=$(printf "%s" "${out[0]}")
         if [ -n "$subdir" ]; then
@@ -165,13 +165,19 @@ __infracost_handle_reply()
                     PREFIX=""
                     cur="${cur#*=}"
                     ${flags_completion[${index}]}
-                    if [ -n "${ZSH_VERSION}" ]; then
+                    if [ -n "${ZSH_VERSION:-}" ]; then
                         # zsh completion needs --flag= prefix
                         eval "COMPREPLY=( \"\${COMPREPLY[@]/#/${flag}=}\" )"
                     fi
                 fi
             fi
-            return 0;
+
+            if [[ -z "${flag_parsing_disabled}" ]]; then
+                # If flag parsing is enabled, we have completed the flags and can return.
+                # If flag parsing is disabled, we may not know all (or any) of the flags, so we fallthrough
+                # to possibly call handle_go_custom_completion.
+                return 0;
+            fi
             ;;
     esac
 
@@ -210,13 +216,13 @@ __infracost_handle_reply()
     fi
 
     if [[ ${#COMPREPLY[@]} -eq 0 ]]; then
-		if declare -F __infracost_custom_func >/dev/null; then
-			# try command name qualified custom func
-			__infracost_custom_func
-		else
-			# otherwise fall back to unqualified for compatibility
-			declare -F __custom_func >/dev/null && __custom_func
-		fi
+        if declare -F __infracost_custom_func >/dev/null; then
+            # try command name qualified custom func
+            __infracost_custom_func
+        else
+            # otherwise fall back to unqualified for compatibility
+            declare -F __custom_func >/dev/null && __custom_func
+        fi
     fi
 
     # available in bash-completion >= 2, not always present on macOS
@@ -250,7 +256,7 @@ __infracost_handle_flag()
 
     # if a command required a flag, and we found it, unset must_have_one_flag()
     local flagname=${words[c]}
-    local flagvalue
+    local flagvalue=""
     # if the word contained an =
     if [[ ${words[c]} == *"="* ]]; then
         flagvalue=${flagname#*=} # take in as flagvalue after the =
@@ -269,7 +275,7 @@ __infracost_handle_flag()
 
     # keep flag value with flagname as flaghash
     # flaghash variable is an associative array which is only supported in bash > 3.
-    if [[ -z "${BASH_VERSION}" || "${BASH_VERSINFO[0]}" -gt 3 ]]; then
+    if [[ -z "${BASH_VERSION:-}" || "${BASH_VERSINFO[0]:-}" -gt 3 ]]; then
         if [ -n "${flagvalue}" ] ; then
             flaghash[${flagname}]=${flagvalue}
         elif [ -n "${words[ $((c+1)) ]}" ] ; then
@@ -281,7 +287,7 @@ __infracost_handle_flag()
 
     # skip the argument to a two word flag
     if [[ ${words[c]} != *"="* ]] && __infracost_contains_word "${words[c]}" "${two_word_flags[@]}"; then
-			  __infracost_debug "${FUNCNAME[0]}: found a flag ${words[c]}, skip the next argument"
+        __infracost_debug "${FUNCNAME[0]}: found a flag ${words[c]}, skip the next argument"
         c=$((c+1))
         # if we are looking for a flags value, don't show commands
         if [[ $c -eq $cword ]]; then
@@ -341,7 +347,7 @@ __infracost_handle_word()
         __infracost_handle_command
     elif __infracost_contains_word "${words[c]}" "${command_aliases[@]}"; then
         # aliashash variable is an associative array which is only supported in bash > 3.
-        if [[ -z "${BASH_VERSION}" || "${BASH_VERSINFO[0]}" -gt 3 ]]; then
+        if [[ -z "${BASH_VERSION:-}" || "${BASH_VERSINFO[0]:-}" -gt 3 ]]; then
             words[c]=${aliashash[${words[c]}]}
             __infracost_handle_command
         else
@@ -351,6 +357,59 @@ __infracost_handle_word()
         __infracost_handle_noun
     fi
     __infracost_handle_word
+}
+
+_infracost_auth_login()
+{
+    last_command="infracost_auth_login"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--debug-report")
+    flags+=("--log-level=")
+    two_word_flags+=("--log-level")
+    flags+=("--no-color")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    must_have_one_noun+=("-")
+    must_have_one_noun+=("--")
+    noun_aliases=()
+}
+
+_infracost_auth()
+{
+    last_command="infracost_auth"
+
+    command_aliases=()
+
+    commands=()
+    commands+=("login")
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--debug-report")
+    flags+=("--log-level=")
+    two_word_flags+=("--log-level")
+    flags+=("--no-color")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    must_have_one_noun+=("-")
+    must_have_one_noun+=("--")
+    noun_aliases=()
 }
 
 _infracost_breakdown()
@@ -373,6 +432,10 @@ _infracost_breakdown()
     flags_completion+=("__infracost_handle_filename_extension_flag yml")
     local_nonpersistent_flags+=("--config-file")
     local_nonpersistent_flags+=("--config-file=")
+    flags+=("--exclude-path=")
+    two_word_flags+=("--exclude-path")
+    local_nonpersistent_flags+=("--exclude-path")
+    local_nonpersistent_flags+=("--exclude-path=")
     flags+=("--fields=")
     two_word_flags+=("--fields")
     local_nonpersistent_flags+=("--fields")
@@ -383,6 +446,14 @@ _infracost_breakdown()
     flags_completion+=("__infracost_handle_go_custom_completion")
     local_nonpersistent_flags+=("--format")
     local_nonpersistent_flags+=("--format=")
+    flags+=("--include-all-paths")
+    local_nonpersistent_flags+=("--include-all-paths")
+    flags+=("--no-cache")
+    local_nonpersistent_flags+=("--no-cache")
+    flags+=("--out-file=")
+    two_word_flags+=("--out-file")
+    local_nonpersistent_flags+=("--out-file")
+    local_nonpersistent_flags+=("--out-file=")
     flags+=("--path=")
     two_word_flags+=("--path")
     flags_with_completion+=("--path")
@@ -393,16 +464,22 @@ _infracost_breakdown()
     local_nonpersistent_flags+=("--path")
     local_nonpersistent_flags+=("--path=")
     local_nonpersistent_flags+=("-p")
+    flags+=("--project-name=")
+    two_word_flags+=("--project-name")
+    local_nonpersistent_flags+=("--project-name")
+    local_nonpersistent_flags+=("--project-name=")
     flags+=("--show-skipped")
     local_nonpersistent_flags+=("--show-skipped")
     flags+=("--sync-usage-file")
     local_nonpersistent_flags+=("--sync-usage-file")
-    flags+=("--terraform-plan-flags=")
-    two_word_flags+=("--terraform-plan-flags")
-    local_nonpersistent_flags+=("--terraform-plan-flags")
-    local_nonpersistent_flags+=("--terraform-plan-flags=")
-    flags+=("--terraform-use-state")
-    local_nonpersistent_flags+=("--terraform-use-state")
+    flags+=("--terraform-var=")
+    two_word_flags+=("--terraform-var")
+    local_nonpersistent_flags+=("--terraform-var")
+    local_nonpersistent_flags+=("--terraform-var=")
+    flags+=("--terraform-var-file=")
+    two_word_flags+=("--terraform-var-file")
+    local_nonpersistent_flags+=("--terraform-var-file")
+    local_nonpersistent_flags+=("--terraform-var-file=")
     flags+=("--terraform-workspace=")
     two_word_flags+=("--terraform-workspace")
     local_nonpersistent_flags+=("--terraform-workspace")
@@ -413,6 +490,380 @@ _infracost_breakdown()
     flags_completion+=("__infracost_handle_filename_extension_flag yml")
     local_nonpersistent_flags+=("--usage-file")
     local_nonpersistent_flags+=("--usage-file=")
+    flags+=("--debug-report")
+    flags+=("--log-level=")
+    two_word_flags+=("--log-level")
+    flags+=("--no-color")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    must_have_one_noun+=("-")
+    must_have_one_noun+=("--")
+    noun_aliases=()
+}
+
+_infracost_comment_azure-repos()
+{
+    last_command="infracost_comment_azure-repos"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--azure-access-token=")
+    two_word_flags+=("--azure-access-token")
+    local_nonpersistent_flags+=("--azure-access-token")
+    local_nonpersistent_flags+=("--azure-access-token=")
+    flags+=("--behavior=")
+    two_word_flags+=("--behavior")
+    flags_with_completion+=("--behavior")
+    flags_completion+=("__infracost_handle_go_custom_completion")
+    local_nonpersistent_flags+=("--behavior")
+    local_nonpersistent_flags+=("--behavior=")
+    flags+=("--dry-run")
+    local_nonpersistent_flags+=("--dry-run")
+    flags+=("--format=")
+    two_word_flags+=("--format")
+    local_nonpersistent_flags+=("--format")
+    local_nonpersistent_flags+=("--format=")
+    flags+=("--init-active")
+    local_nonpersistent_flags+=("--init-active")
+    flags+=("--path=")
+    two_word_flags+=("--path")
+    flags_with_completion+=("--path")
+    flags_completion+=("__infracost_handle_filename_extension_flag json")
+    two_word_flags+=("-p")
+    flags_with_completion+=("-p")
+    flags_completion+=("__infracost_handle_filename_extension_flag json")
+    local_nonpersistent_flags+=("--path")
+    local_nonpersistent_flags+=("--path=")
+    local_nonpersistent_flags+=("-p")
+    flags+=("--policy-path=")
+    two_word_flags+=("--policy-path")
+    local_nonpersistent_flags+=("--policy-path")
+    local_nonpersistent_flags+=("--policy-path=")
+    flags+=("--pull-request=")
+    two_word_flags+=("--pull-request")
+    local_nonpersistent_flags+=("--pull-request")
+    local_nonpersistent_flags+=("--pull-request=")
+    flags+=("--repo-url=")
+    two_word_flags+=("--repo-url")
+    local_nonpersistent_flags+=("--repo-url")
+    local_nonpersistent_flags+=("--repo-url=")
+    flags+=("--show-all-projects")
+    local_nonpersistent_flags+=("--show-all-projects")
+    flags+=("--show-skipped")
+    local_nonpersistent_flags+=("--show-skipped")
+    flags+=("--tag=")
+    two_word_flags+=("--tag")
+    local_nonpersistent_flags+=("--tag")
+    local_nonpersistent_flags+=("--tag=")
+    flags+=("--debug-report")
+    flags+=("--log-level=")
+    two_word_flags+=("--log-level")
+    flags+=("--no-color")
+
+    must_have_one_flag=()
+    must_have_one_flag+=("--azure-access-token=")
+    must_have_one_flag+=("--path=")
+    must_have_one_flag+=("-p")
+    must_have_one_flag+=("--pull-request=")
+    must_have_one_flag+=("--repo-url=")
+    must_have_one_noun=()
+    must_have_one_noun+=("-")
+    must_have_one_noun+=("--")
+    noun_aliases=()
+}
+
+_infracost_comment_bitbucket()
+{
+    last_command="infracost_comment_bitbucket"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--behavior=")
+    two_word_flags+=("--behavior")
+    flags_with_completion+=("--behavior")
+    flags_completion+=("__infracost_handle_go_custom_completion")
+    local_nonpersistent_flags+=("--behavior")
+    local_nonpersistent_flags+=("--behavior=")
+    flags+=("--bitbucket-server-url=")
+    two_word_flags+=("--bitbucket-server-url")
+    local_nonpersistent_flags+=("--bitbucket-server-url")
+    local_nonpersistent_flags+=("--bitbucket-server-url=")
+    flags+=("--bitbucket-token=")
+    two_word_flags+=("--bitbucket-token")
+    local_nonpersistent_flags+=("--bitbucket-token")
+    local_nonpersistent_flags+=("--bitbucket-token=")
+    flags+=("--commit=")
+    two_word_flags+=("--commit")
+    local_nonpersistent_flags+=("--commit")
+    local_nonpersistent_flags+=("--commit=")
+    flags+=("--dry-run")
+    local_nonpersistent_flags+=("--dry-run")
+    flags+=("--exclude-cli-output")
+    local_nonpersistent_flags+=("--exclude-cli-output")
+    flags+=("--format=")
+    two_word_flags+=("--format")
+    local_nonpersistent_flags+=("--format")
+    local_nonpersistent_flags+=("--format=")
+    flags+=("--path=")
+    two_word_flags+=("--path")
+    flags_with_completion+=("--path")
+    flags_completion+=("__infracost_handle_filename_extension_flag json")
+    two_word_flags+=("-p")
+    flags_with_completion+=("-p")
+    flags_completion+=("__infracost_handle_filename_extension_flag json")
+    local_nonpersistent_flags+=("--path")
+    local_nonpersistent_flags+=("--path=")
+    local_nonpersistent_flags+=("-p")
+    flags+=("--policy-path=")
+    two_word_flags+=("--policy-path")
+    local_nonpersistent_flags+=("--policy-path")
+    local_nonpersistent_flags+=("--policy-path=")
+    flags+=("--pull-request=")
+    two_word_flags+=("--pull-request")
+    local_nonpersistent_flags+=("--pull-request")
+    local_nonpersistent_flags+=("--pull-request=")
+    flags+=("--repo=")
+    two_word_flags+=("--repo")
+    local_nonpersistent_flags+=("--repo")
+    local_nonpersistent_flags+=("--repo=")
+    flags+=("--show-all-projects")
+    local_nonpersistent_flags+=("--show-all-projects")
+    flags+=("--show-skipped")
+    local_nonpersistent_flags+=("--show-skipped")
+    flags+=("--tag=")
+    two_word_flags+=("--tag")
+    local_nonpersistent_flags+=("--tag")
+    local_nonpersistent_flags+=("--tag=")
+    flags+=("--debug-report")
+    flags+=("--log-level=")
+    two_word_flags+=("--log-level")
+    flags+=("--no-color")
+
+    must_have_one_flag=()
+    must_have_one_flag+=("--bitbucket-token=")
+    must_have_one_flag+=("--path=")
+    must_have_one_flag+=("-p")
+    must_have_one_flag+=("--repo=")
+    must_have_one_noun=()
+    must_have_one_noun+=("-")
+    must_have_one_noun+=("--")
+    noun_aliases=()
+}
+
+_infracost_comment_github()
+{
+    last_command="infracost_comment_github"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--behavior=")
+    two_word_flags+=("--behavior")
+    flags_with_completion+=("--behavior")
+    flags_completion+=("__infracost_handle_go_custom_completion")
+    local_nonpersistent_flags+=("--behavior")
+    local_nonpersistent_flags+=("--behavior=")
+    flags+=("--commit=")
+    two_word_flags+=("--commit")
+    local_nonpersistent_flags+=("--commit")
+    local_nonpersistent_flags+=("--commit=")
+    flags+=("--dry-run")
+    local_nonpersistent_flags+=("--dry-run")
+    flags+=("--format=")
+    two_word_flags+=("--format")
+    local_nonpersistent_flags+=("--format")
+    local_nonpersistent_flags+=("--format=")
+    flags+=("--github-api-url=")
+    two_word_flags+=("--github-api-url")
+    local_nonpersistent_flags+=("--github-api-url")
+    local_nonpersistent_flags+=("--github-api-url=")
+    flags+=("--github-tls-cert-file=")
+    two_word_flags+=("--github-tls-cert-file")
+    local_nonpersistent_flags+=("--github-tls-cert-file")
+    local_nonpersistent_flags+=("--github-tls-cert-file=")
+    flags+=("--github-tls-insecure-skip-verify")
+    local_nonpersistent_flags+=("--github-tls-insecure-skip-verify")
+    flags+=("--github-tls-key-file=")
+    two_word_flags+=("--github-tls-key-file")
+    local_nonpersistent_flags+=("--github-tls-key-file")
+    local_nonpersistent_flags+=("--github-tls-key-file=")
+    flags+=("--github-token=")
+    two_word_flags+=("--github-token")
+    local_nonpersistent_flags+=("--github-token")
+    local_nonpersistent_flags+=("--github-token=")
+    flags+=("--path=")
+    two_word_flags+=("--path")
+    flags_with_completion+=("--path")
+    flags_completion+=("__infracost_handle_filename_extension_flag json")
+    two_word_flags+=("-p")
+    flags_with_completion+=("-p")
+    flags_completion+=("__infracost_handle_filename_extension_flag json")
+    local_nonpersistent_flags+=("--path")
+    local_nonpersistent_flags+=("--path=")
+    local_nonpersistent_flags+=("-p")
+    flags+=("--policy-path=")
+    two_word_flags+=("--policy-path")
+    local_nonpersistent_flags+=("--policy-path")
+    local_nonpersistent_flags+=("--policy-path=")
+    flags+=("--pull-request=")
+    two_word_flags+=("--pull-request")
+    local_nonpersistent_flags+=("--pull-request")
+    local_nonpersistent_flags+=("--pull-request=")
+    flags+=("--repo=")
+    two_word_flags+=("--repo")
+    local_nonpersistent_flags+=("--repo")
+    local_nonpersistent_flags+=("--repo=")
+    flags+=("--show-all-projects")
+    local_nonpersistent_flags+=("--show-all-projects")
+    flags+=("--show-skipped")
+    local_nonpersistent_flags+=("--show-skipped")
+    flags+=("--tag=")
+    two_word_flags+=("--tag")
+    local_nonpersistent_flags+=("--tag")
+    local_nonpersistent_flags+=("--tag=")
+    flags+=("--debug-report")
+    flags+=("--log-level=")
+    two_word_flags+=("--log-level")
+    flags+=("--no-color")
+
+    must_have_one_flag=()
+    must_have_one_flag+=("--github-token=")
+    must_have_one_flag+=("--path=")
+    must_have_one_flag+=("-p")
+    must_have_one_flag+=("--repo=")
+    must_have_one_noun=()
+    must_have_one_noun+=("-")
+    must_have_one_noun+=("--")
+    noun_aliases=()
+}
+
+_infracost_comment_gitlab()
+{
+    last_command="infracost_comment_gitlab"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--behavior=")
+    two_word_flags+=("--behavior")
+    flags_with_completion+=("--behavior")
+    flags_completion+=("__infracost_handle_go_custom_completion")
+    local_nonpersistent_flags+=("--behavior")
+    local_nonpersistent_flags+=("--behavior=")
+    flags+=("--commit=")
+    two_word_flags+=("--commit")
+    local_nonpersistent_flags+=("--commit")
+    local_nonpersistent_flags+=("--commit=")
+    flags+=("--dry-run")
+    local_nonpersistent_flags+=("--dry-run")
+    flags+=("--format=")
+    two_word_flags+=("--format")
+    local_nonpersistent_flags+=("--format")
+    local_nonpersistent_flags+=("--format=")
+    flags+=("--gitlab-server-url=")
+    two_word_flags+=("--gitlab-server-url")
+    local_nonpersistent_flags+=("--gitlab-server-url")
+    local_nonpersistent_flags+=("--gitlab-server-url=")
+    flags+=("--gitlab-token=")
+    two_word_flags+=("--gitlab-token")
+    local_nonpersistent_flags+=("--gitlab-token")
+    local_nonpersistent_flags+=("--gitlab-token=")
+    flags+=("--merge-request=")
+    two_word_flags+=("--merge-request")
+    local_nonpersistent_flags+=("--merge-request")
+    local_nonpersistent_flags+=("--merge-request=")
+    flags+=("--path=")
+    two_word_flags+=("--path")
+    flags_with_completion+=("--path")
+    flags_completion+=("__infracost_handle_filename_extension_flag json")
+    two_word_flags+=("-p")
+    flags_with_completion+=("-p")
+    flags_completion+=("__infracost_handle_filename_extension_flag json")
+    local_nonpersistent_flags+=("--path")
+    local_nonpersistent_flags+=("--path=")
+    local_nonpersistent_flags+=("-p")
+    flags+=("--policy-path=")
+    two_word_flags+=("--policy-path")
+    local_nonpersistent_flags+=("--policy-path")
+    local_nonpersistent_flags+=("--policy-path=")
+    flags+=("--repo=")
+    two_word_flags+=("--repo")
+    local_nonpersistent_flags+=("--repo")
+    local_nonpersistent_flags+=("--repo=")
+    flags+=("--show-all-projects")
+    local_nonpersistent_flags+=("--show-all-projects")
+    flags+=("--show-skipped")
+    local_nonpersistent_flags+=("--show-skipped")
+    flags+=("--tag=")
+    two_word_flags+=("--tag")
+    local_nonpersistent_flags+=("--tag")
+    local_nonpersistent_flags+=("--tag=")
+    flags+=("--debug-report")
+    flags+=("--log-level=")
+    two_word_flags+=("--log-level")
+    flags+=("--no-color")
+
+    must_have_one_flag=()
+    must_have_one_flag+=("--gitlab-token=")
+    must_have_one_flag+=("--path=")
+    must_have_one_flag+=("-p")
+    must_have_one_flag+=("--repo=")
+    must_have_one_noun=()
+    must_have_one_noun+=("-")
+    must_have_one_noun+=("--")
+    noun_aliases=()
+}
+
+_infracost_comment()
+{
+    last_command="infracost_comment"
+
+    command_aliases=()
+
+    commands=()
+    commands+=("azure-repos")
+    commands+=("bitbucket")
+    commands+=("github")
+    commands+=("gitlab")
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--debug-report")
     flags+=("--log-level=")
     two_word_flags+=("--log-level")
     flags+=("--no-color")
@@ -448,6 +899,7 @@ _infracost_completion()
     flags_completion+=("__infracost_handle_go_custom_completion")
     local_nonpersistent_flags+=("--shell")
     local_nonpersistent_flags+=("--shell=")
+    flags+=("--debug-report")
     flags+=("--log-level=")
     two_word_flags+=("--log-level")
     flags+=("--no-color")
@@ -472,6 +924,7 @@ _infracost_configure_get()
     flags_with_completion=()
     flags_completion=()
 
+    flags+=("--debug-report")
     flags+=("--log-level=")
     two_word_flags+=("--log-level")
     flags+=("--no-color")
@@ -495,6 +948,7 @@ _infracost_configure_set()
     flags_with_completion=()
     flags_completion=()
 
+    flags+=("--debug-report")
     flags+=("--log-level=")
     two_word_flags+=("--log-level")
     flags+=("--no-color")
@@ -520,6 +974,7 @@ _infracost_configure()
     flags_with_completion=()
     flags_completion=()
 
+    flags+=("--debug-report")
     flags+=("--log-level=")
     two_word_flags+=("--log-level")
     flags+=("--no-color")
@@ -543,12 +998,34 @@ _infracost_diff()
     flags_with_completion=()
     flags_completion=()
 
+    flags+=("--compare-to=")
+    two_word_flags+=("--compare-to")
+    local_nonpersistent_flags+=("--compare-to")
+    local_nonpersistent_flags+=("--compare-to=")
     flags+=("--config-file=")
     two_word_flags+=("--config-file")
     flags_with_completion+=("--config-file")
     flags_completion+=("__infracost_handle_filename_extension_flag yml")
     local_nonpersistent_flags+=("--config-file")
     local_nonpersistent_flags+=("--config-file=")
+    flags+=("--exclude-path=")
+    two_word_flags+=("--exclude-path")
+    local_nonpersistent_flags+=("--exclude-path")
+    local_nonpersistent_flags+=("--exclude-path=")
+    flags+=("--format=")
+    two_word_flags+=("--format")
+    flags_with_completion+=("--format")
+    flags_completion+=("__infracost_handle_go_custom_completion")
+    local_nonpersistent_flags+=("--format")
+    local_nonpersistent_flags+=("--format=")
+    flags+=("--include-all-paths")
+    local_nonpersistent_flags+=("--include-all-paths")
+    flags+=("--no-cache")
+    local_nonpersistent_flags+=("--no-cache")
+    flags+=("--out-file=")
+    two_word_flags+=("--out-file")
+    local_nonpersistent_flags+=("--out-file")
+    local_nonpersistent_flags+=("--out-file=")
     flags+=("--path=")
     two_word_flags+=("--path")
     flags_with_completion+=("--path")
@@ -559,14 +1036,22 @@ _infracost_diff()
     local_nonpersistent_flags+=("--path")
     local_nonpersistent_flags+=("--path=")
     local_nonpersistent_flags+=("-p")
+    flags+=("--project-name=")
+    two_word_flags+=("--project-name")
+    local_nonpersistent_flags+=("--project-name")
+    local_nonpersistent_flags+=("--project-name=")
     flags+=("--show-skipped")
     local_nonpersistent_flags+=("--show-skipped")
     flags+=("--sync-usage-file")
     local_nonpersistent_flags+=("--sync-usage-file")
-    flags+=("--terraform-plan-flags=")
-    two_word_flags+=("--terraform-plan-flags")
-    local_nonpersistent_flags+=("--terraform-plan-flags")
-    local_nonpersistent_flags+=("--terraform-plan-flags=")
+    flags+=("--terraform-var=")
+    two_word_flags+=("--terraform-var")
+    local_nonpersistent_flags+=("--terraform-var")
+    local_nonpersistent_flags+=("--terraform-var=")
+    flags+=("--terraform-var-file=")
+    two_word_flags+=("--terraform-var-file")
+    local_nonpersistent_flags+=("--terraform-var-file")
+    local_nonpersistent_flags+=("--terraform-var-file=")
     flags+=("--terraform-workspace=")
     two_word_flags+=("--terraform-workspace")
     local_nonpersistent_flags+=("--terraform-workspace")
@@ -577,6 +1062,80 @@ _infracost_diff()
     flags_completion+=("__infracost_handle_filename_extension_flag yml")
     local_nonpersistent_flags+=("--usage-file")
     local_nonpersistent_flags+=("--usage-file=")
+    flags+=("--debug-report")
+    flags+=("--log-level=")
+    two_word_flags+=("--log-level")
+    flags+=("--no-color")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    must_have_one_noun+=("-")
+    must_have_one_noun+=("--")
+    noun_aliases=()
+}
+
+_infracost_generate_config()
+{
+    last_command="infracost_generate_config"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--out-file=")
+    two_word_flags+=("--out-file")
+    local_nonpersistent_flags+=("--out-file")
+    local_nonpersistent_flags+=("--out-file=")
+    flags+=("--repo-path=")
+    two_word_flags+=("--repo-path")
+    local_nonpersistent_flags+=("--repo-path")
+    local_nonpersistent_flags+=("--repo-path=")
+    flags+=("--template=")
+    two_word_flags+=("--template")
+    local_nonpersistent_flags+=("--template")
+    local_nonpersistent_flags+=("--template=")
+    flags+=("--template-path=")
+    two_word_flags+=("--template-path")
+    local_nonpersistent_flags+=("--template-path")
+    local_nonpersistent_flags+=("--template-path=")
+    flags+=("--tree-file=")
+    two_word_flags+=("--tree-file")
+    local_nonpersistent_flags+=("--tree-file")
+    local_nonpersistent_flags+=("--tree-file=")
+    flags+=("--debug-report")
+    flags+=("--log-level=")
+    two_word_flags+=("--log-level")
+    flags+=("--no-color")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    must_have_one_noun+=("-")
+    must_have_one_noun+=("--")
+    noun_aliases=()
+}
+
+_infracost_generate()
+{
+    last_command="infracost_generate"
+
+    command_aliases=()
+
+    commands=()
+    commands+=("config")
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--debug-report")
     flags+=("--log-level=")
     two_word_flags+=("--log-level")
     flags+=("--no-color")
@@ -602,6 +1161,7 @@ _infracost_help()
     flags_with_completion=()
     flags_completion=()
 
+    flags+=("--debug-report")
     flags+=("--log-level=")
     two_word_flags+=("--log-level")
     flags+=("--no-color")
@@ -636,6 +1196,12 @@ _infracost_output()
     flags_completion+=("__infracost_handle_go_custom_completion")
     local_nonpersistent_flags+=("--format")
     local_nonpersistent_flags+=("--format=")
+    flags+=("--out-file=")
+    two_word_flags+=("--out-file")
+    two_word_flags+=("-o")
+    local_nonpersistent_flags+=("--out-file")
+    local_nonpersistent_flags+=("--out-file=")
+    local_nonpersistent_flags+=("-o")
     flags+=("--path=")
     two_word_flags+=("--path")
     flags_with_completion+=("--path")
@@ -646,8 +1212,11 @@ _infracost_output()
     local_nonpersistent_flags+=("--path")
     local_nonpersistent_flags+=("--path=")
     local_nonpersistent_flags+=("-p")
+    flags+=("--show-all-projects")
+    local_nonpersistent_flags+=("--show-all-projects")
     flags+=("--show-skipped")
     local_nonpersistent_flags+=("--show-skipped")
+    flags+=("--debug-report")
     flags+=("--log-level=")
     two_word_flags+=("--log-level")
     flags+=("--no-color")
@@ -661,9 +1230,9 @@ _infracost_output()
     noun_aliases=()
 }
 
-_infracost_register()
+_infracost_upload()
 {
-    last_command="infracost_register"
+    last_command="infracost_upload"
 
     command_aliases=()
 
@@ -675,12 +1244,26 @@ _infracost_register()
     flags_with_completion=()
     flags_completion=()
 
+    flags+=("--format=")
+    two_word_flags+=("--format")
+    local_nonpersistent_flags+=("--format")
+    local_nonpersistent_flags+=("--format=")
+    flags+=("--path=")
+    two_word_flags+=("--path")
+    flags_with_completion+=("--path")
+    flags_completion+=("__infracost_handle_filename_extension_flag json")
+    local_nonpersistent_flags+=("--path")
+    local_nonpersistent_flags+=("--path=")
+    flags+=("--debug-report")
     flags+=("--log-level=")
     two_word_flags+=("--log-level")
     flags+=("--no-color")
 
     must_have_one_flag=()
+    must_have_one_flag+=("--path=")
     must_have_one_noun=()
+    must_have_one_noun+=("-")
+    must_have_one_noun+=("--")
     noun_aliases=()
 }
 
@@ -691,13 +1274,16 @@ _infracost_root_command()
     command_aliases=()
 
     commands=()
+    commands+=("auth")
     commands+=("breakdown")
+    commands+=("comment")
     commands+=("completion")
     commands+=("configure")
     commands+=("diff")
+    commands+=("generate")
     commands+=("help")
     commands+=("output")
-    commands+=("register")
+    commands+=("upload")
 
     flags=()
     two_word_flags=()
@@ -705,6 +1291,7 @@ _infracost_root_command()
     flags_with_completion=()
     flags_completion=()
 
+    flags+=("--debug-report")
     flags+=("--log-level=")
     two_word_flags+=("--log-level")
     flags+=("--no-color")
@@ -716,7 +1303,7 @@ _infracost_root_command()
 
 __start_infracost()
 {
-    local cur prev words cword
+    local cur prev words cword split
     declare -A flaghash 2>/dev/null || :
     declare -A aliashash 2>/dev/null || :
     if declare -F _init_completion >/dev/null 2>&1; then
@@ -726,17 +1313,20 @@ __start_infracost()
     fi
 
     local c=0
+    local flag_parsing_disabled=
     local flags=()
     local two_word_flags=()
     local local_nonpersistent_flags=()
     local flags_with_completion=()
     local flags_completion=()
     local commands=("infracost")
+    local command_aliases=()
     local must_have_one_flag=()
     local must_have_one_noun=()
-    local has_completion_function
-    local last_command
+    local has_completion_function=""
+    local last_command=""
     local nouns=()
+    local noun_aliases=()
 
     __infracost_handle_word
 }

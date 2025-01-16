@@ -1,22 +1,40 @@
 package apiclient
 
 import (
+	"regexp"
+
 	"github.com/infracost/infracost/internal/clierror"
 	"github.com/infracost/infracost/internal/config"
 	"github.com/infracost/infracost/internal/ui"
-	"github.com/pkg/errors"
 )
 
-func ReportCLIError(ctx *config.RunContext, cliErr error) error {
+// Regex for finding potential URLs and file paths in error messages
+// so we can sanitize them. This regex might be too greedy and match
+// too many things, but it's a start.
+var pathRegex = regexp.MustCompile(`(\w+:)?[\.~\w]*[\/\\]+([^\s:'\"\]]+)|([\w+-]\.\w{2,})`)
+
+func ReportCLIError(ctx *config.RunContext, cliErr error, replacePath bool) error {
+	if ctx.Config.IsSelfHosted() {
+		return nil
+	}
+
 	errMsg := ui.StripColor(cliErr.Error())
-	var sanitizedErr *clierror.SanitizedError
-	if errors.As(cliErr, &sanitizedErr) {
+	stacktrace := ""
+
+	sanitizedErr, ok := cliErr.(clierror.SanitizedError)
+	if ok {
 		errMsg = ui.StripColor(sanitizedErr.SanitizedError())
+		stacktrace = sanitizedErr.SanitizedStack()
+	}
+
+	if replacePath {
+		errMsg = pathRegex.ReplaceAllString(errMsg, "REPLACED_PATH")
 	}
 
 	d := ctx.EventEnv()
 	d["error"] = errMsg
+	d["stacktrace"] = stacktrace
 
-	c := NewPricingAPIClient(ctx.Config)
+	c := GetPricingAPIClient(ctx)
 	return c.AddEvent("infracost-error", d)
 }

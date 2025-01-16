@@ -3,10 +3,11 @@ package aws
 import (
 	"strings"
 
+	"github.com/shopspring/decimal"
+
+	"github.com/infracost/infracost/internal/logging"
 	"github.com/infracost/infracost/internal/resources"
 	"github.com/infracost/infracost/internal/schema"
-	"github.com/shopspring/decimal"
-	log "github.com/sirupsen/logrus"
 )
 
 type LaunchTemplate struct {
@@ -40,13 +41,21 @@ type LaunchTemplate struct {
 
 var LaunchTemplateUsageSchema = InstanceUsageSchema
 
+func (r *LaunchTemplate) CoreType() string {
+	return "LaunchTemplate"
+}
+
+func (r *LaunchTemplate) UsageSchema() []*schema.UsageItem {
+	return LaunchTemplateUsageSchema
+}
+
 func (a *LaunchTemplate) PopulateUsage(u *schema.UsageData) {
 	resources.PopulateArgsWithUsage(a, u)
 }
 
 func (a *LaunchTemplate) BuildResource() *schema.Resource {
 	if strings.ToLower(a.Tenancy) == "host" {
-		log.Warnf("Skipping resource %s. Infracost currently does not support host tenancy for AWS Launch Templates", a.Address)
+		logging.Logger.Warn().Msgf("Skipping resource %s. Infracost currently does not support host tenancy for AWS Launch Templates", a.Address)
 		return nil
 	} else if strings.ToLower(a.Tenancy) == "dedicated" {
 		a.Tenancy = "Dedicated"
@@ -85,13 +94,13 @@ func (a *LaunchTemplate) BuildResource() *schema.Resource {
 
 	r := &schema.Resource{
 		Name:           a.Address,
-		UsageSchema:    LaunchTemplateUsageSchema,
+		UsageSchema:    a.UsageSchema(),
 		CostComponents: costComponents,
 		SubResources:   instanceResource.SubResources,
 		EstimateUsage:  instanceResource.EstimateUsage,
 	}
 
-	instanceCount := int64(0)
+	instanceCount := int64(1)
 	if a.InstanceCount != nil {
 		instanceCount = *a.InstanceCount
 	}
@@ -103,14 +112,14 @@ func (a *LaunchTemplate) BuildResource() *schema.Resource {
 	if spotCount > 0 {
 		instance.PurchaseOption = "spot"
 		c := instance.computeCostComponent()
-		c.HourlyQuantity = decimalPtr(c.HourlyQuantity.Mul(decimal.NewFromInt(spotCount)))
+		c.MonthlyQuantity = decimalPtr(c.MonthlyQuantity.Mul(decimal.NewFromInt(spotCount)))
 		r.CostComponents = append([]*schema.CostComponent{c}, r.CostComponents...)
 	}
 
 	if onDemandCount > 0 {
 		instance.PurchaseOption = "on_demand"
 		c := instance.computeCostComponent()
-		c.HourlyQuantity = decimalPtr(c.HourlyQuantity.Mul(decimal.NewFromInt(onDemandCount)))
+		c.MonthlyQuantity = decimalPtr(c.MonthlyQuantity.Mul(decimal.NewFromInt(onDemandCount)))
 		r.CostComponents = append([]*schema.CostComponent{c}, r.CostComponents...)
 	}
 
@@ -118,7 +127,7 @@ func (a *LaunchTemplate) BuildResource() *schema.Resource {
 }
 
 func (a *LaunchTemplate) calculateOnDemandAndSpotInstanceCounts() (int64, int64) {
-	instanceCount := int64(0)
+	instanceCount := int64(1)
 	if a.InstanceCount != nil {
 		instanceCount = *a.InstanceCount
 	}

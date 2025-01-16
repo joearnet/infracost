@@ -1,5 +1,6 @@
 provider "google" {
   credentials = "{\"type\":\"service_account\"}"
+  project     = "my-project"
   region      = "us-central1"
 }
 
@@ -36,6 +37,58 @@ resource "google_container_node_pool" "with_node_config_regional" {
 
     guest_accelerator {
       type  = "nvidia-tesla-k80"
+      count = 4
+    }
+  }
+}
+
+resource "google_container_node_pool" "with_custom_instance" {
+  name       = "with-custom-instance"
+  cluster    = google_container_cluster.default_regional.id
+  node_count = 3
+
+  node_config {
+    machine_type = "n1-custom-6-20480"
+  }
+}
+
+resource "google_container_node_pool" "with_preemptible_instance" {
+  name       = "with-preemptible-instance"
+  cluster    = google_container_cluster.default_regional.id
+  node_count = 3
+
+  node_config {
+    machine_type = "n1-custom-6-20480"
+    preemptible  = true
+  }
+
+}
+
+resource "google_container_node_pool" "with_spot_instance" {
+  name       = "with-preemptible-instance"
+  cluster    = google_container_cluster.default_regional.id
+  node_count = 3
+
+  node_config {
+    machine_type = "n1-custom-6-20480"
+    spot         = true
+  }
+
+}
+
+resource "google_container_node_pool" "with_guest_accelerator_a100" {
+  name       = "with-a100"
+  cluster    = google_container_cluster.default_regional.id
+  node_count = 3
+
+  node_config {
+    machine_type    = "n1-standard-16"
+    disk_size_gb    = 120
+    disk_type       = "pd-ssd"
+    local_ssd_count = 1
+
+    guest_accelerator {
+      type  = "nvidia-tesla-a100"
       count = 4
     }
   }

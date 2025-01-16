@@ -1,31 +1,21 @@
 package aws
 
 import (
+	"github.com/infracost/infracost/internal/resources/aws"
 	"github.com/infracost/infracost/internal/schema"
-	"github.com/shopspring/decimal"
-	"github.com/tidwall/gjson"
 )
 
-func GetKinesisDataAnalyticsSnapshotRegistryItem() *schema.RegistryItem {
+func getKinesisAnalyticsV2ApplicationSnapshotRegistryItem() *schema.RegistryItem {
 	return &schema.RegistryItem{
-		Name:  "aws_kinesisanalyticsv2_application_snapshot",
-		RFunc: NewKinesisDataAnalyticsSnapshot,
+		Name:      "aws_kinesisanalyticsv2_application_snapshot",
+		CoreRFunc: NewKinesisAnalyticsV2ApplicationSnapshot,
 	}
 }
 
-func NewKinesisDataAnalyticsSnapshot(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
-	region := d.Get("region").String()
-	costComponents := make([]*schema.CostComponent, 0)
-	var durableApplicationBackupGb *decimal.Decimal
-
-	if u != nil && u.Get("durable_application_backup_gb").Type != gjson.Null {
-		durableApplicationBackupGb = decimalPtr(decimal.NewFromInt(u.Get("durable_application_backup_gb").Int()))
+func NewKinesisAnalyticsV2ApplicationSnapshot(d *schema.ResourceData) schema.CoreResource {
+	r := &aws.KinesisAnalyticsV2ApplicationSnapshot{
+		Address: d.Address,
+		Region:  d.Get("region").String(),
 	}
-
-	costComponents = append(costComponents, kinesisBackupCostComponent(region, durableApplicationBackupGb))
-
-	return &schema.Resource{
-		Name:           d.Address,
-		CostComponents: costComponents,
-	}
+	return r
 }

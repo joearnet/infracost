@@ -6,13 +6,14 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 type testResolver struct {
 	URL string
 }
 
-func (tr *testResolver) ResolveEndpoint(service, region string) (aws.Endpoint, error) {
+func (tr *testResolver) ResolveEndpoint(service, region string, options ...interface{}) (aws.Endpoint, error) {
 	return aws.Endpoint{
 		URL: tr.URL,
 	}, nil
@@ -28,9 +29,17 @@ func (tc *testCredentials) Retrieve(ctx context.Context) (aws.Credentials, error
 func WithTestEndpoint(ctx context.Context, url string) context.Context {
 	resolver := &testResolver{URL: url}
 	opts := []func(*config.LoadOptions) error{
-		config.WithEndpointResolver(resolver),
+		config.WithEndpointResolverWithOptions(resolver),
 		config.WithCredentialsProvider(&testCredentials{}),
 		// config.WithClientLogMode(aws.LogRequestWithBody | aws.LogResponseWithBody),
 	}
-	return context.WithValue(ctx, ctxKey, opts)
+	ctx = context.WithValue(ctx, ctxConfigOptsKey, opts)
+
+	s3Opts := func(o *s3.Options) {
+		// We need this so the SDK doesn't use a subdomain for its requests
+		o.UsePathStyle = true
+	}
+
+	ctx = context.WithValue(ctx, ctxS3ConfigOptsKey, s3Opts)
+	return ctx
 }

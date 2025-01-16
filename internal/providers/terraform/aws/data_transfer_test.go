@@ -1,21 +1,24 @@
 package aws_test
 
 import (
+	"testing"
+
+	"github.com/shopspring/decimal"
+
 	"github.com/infracost/infracost/internal/schema"
 	"github.com/infracost/infracost/internal/testutil"
-	"github.com/shopspring/decimal"
-	"testing"
 
 	"github.com/infracost/infracost/internal/providers/terraform/tftest"
 )
 
 func TestDataTransferGoldenFile(t *testing.T) {
-	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping test in short mode")
 	}
 
-	tftest.GoldenFileResourceTests(t, "data_transfer_test")
+	opts := tftest.DefaultGoldenFileOptions()
+	opts.CaptureLogs = true
+	tftest.GoldenFileResourceTestsWithOpts(t, "data_transfer_test", opts)
 }
 
 func TestChinaDataTransfer(t *testing.T) {
@@ -26,7 +29,7 @@ func TestChinaDataTransfer(t *testing.T) {
 
 	tf := ``
 
-	usage := schema.NewUsageMap(map[string]interface{}{
+	usage := schema.NewUsageMapFromInterface(map[string]interface{}{
 		"aws_data_transfer.cn-north-1": map[string]interface{}{
 			"region":                            "cn-north-1",
 			"monthly_intra_region_gb":           10,
@@ -57,7 +60,7 @@ func TestChinaDataTransfer(t *testing.T) {
 				},
 				{
 					Name:             "Outbound data transfer to other regions",
-					PriceHash:        "c1bbbe9eb53baf0f1ca39c03ffcf5c80-b1ae3861dc57e2db217fa83a7420374f",
+					PriceHash:        "3700bb72dc52aa255c23d186418a8ee5-b1ae3861dc57e2db217fa83a7420374f",
 					MonthlyCostCheck: testutil.MonthlyPriceMultiplierCheck(decimal.NewFromInt(20)),
 				},
 			},
@@ -77,7 +80,7 @@ func TestChinaDataTransfer(t *testing.T) {
 				},
 				{
 					Name:             "Outbound data transfer to other regions",
-					PriceHash:        "3700bb72dc52aa255c23d186418a8ee5-b1ae3861dc57e2db217fa83a7420374f",
+					PriceHash:        "c1bbbe9eb53baf0f1ca39c03ffcf5c80-b1ae3861dc57e2db217fa83a7420374f",
 					MonthlyCostCheck: testutil.MonthlyPriceMultiplierCheck(decimal.NewFromInt(20)),
 				},
 			},

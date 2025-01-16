@@ -4,17 +4,19 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/infracost/infracost/internal/resources/aws"
 	"github.com/shopspring/decimal"
 	"github.com/tidwall/gjson"
+
+	"github.com/infracost/infracost/internal/logging"
+	"github.com/infracost/infracost/internal/resources/aws"
 
 	"github.com/infracost/infracost/internal/schema"
 )
 
 func GetAutoscalingGroupRegistryItem() *schema.RegistryItem {
 	return &schema.RegistryItem{
-		Name:  "aws_autoscaling_group",
-		RFunc: NewAutoscalingGroup,
+		Name:      "aws_autoscaling_group",
+		CoreRFunc: NewAutoscalingGroup,
 		ReferenceAttributes: []string{
 			"launch_configuration",
 			"launch_template.0.id",
@@ -25,13 +27,24 @@ func GetAutoscalingGroupRegistryItem() *schema.RegistryItem {
 	}
 }
 
-func NewAutoscalingGroup(d *schema.ResourceData, u *schema.UsageData) *schema.Resource {
+func NewAutoscalingGroup(d *schema.ResourceData) schema.CoreResource {
 	a := &aws.AutoscalingGroup{
 		Address: d.Address,
 		Region:  d.Get("region").String(),
+		Name:    d.Get("name").String(),
 	}
 
-	instanceCount := d.Get("desired_capacity").Int()
+	var instanceCount int64
+
+	if !d.IsEmpty("desired_capacity") {
+		instanceCount = d.Get("desired_capacity").Int()
+	} else {
+		instanceCount = d.Get("min_size").Int()
+		if instanceCount == 0 {
+			logging.Logger.Debug().Msgf("Using instance count 1 for %s since no desired_capacity or non-zero min_size is set. To override this set the instance_count attribute for this resource in the Infracost usage file.", a.Address)
+			instanceCount = 1
+		}
+	}
 
 	// The Autoscaling Group resource has either a Launch Configuration or Launch Template sub-resource.
 	// So we create generic resources for these and add them as a subresource of the Autoscaling Group resource.
@@ -47,7 +60,7 @@ func NewAutoscalingGroup(d *schema.ResourceData, u *schema.UsageData) *schema.Re
 
 	if len(launchConfigurationRef) > 0 {
 		data := launchConfigurationRef[0]
-		a.LaunchConfiguration = newLaunchConfiguration(data, u, a.Region, instanceCount)
+		a.LaunchConfiguration = newLaunchConfiguration(data, a.Region, instanceCount)
 	} else if len(launchTemplateRef) > 0 {
 		data := launchTemplateRef[0]
 
@@ -56,18 +69,16 @@ func NewAutoscalingGroup(d *schema.ResourceData, u *schema.UsageData) *schema.Re
 			onDemandPercentageAboveBaseCount = int64(0)
 		}
 
-		a.LaunchTemplate = newLaunchTemplate(data, u, a.Region, instanceCount, int64(0), onDemandPercentageAboveBaseCount)
+		a.LaunchTemplate = newLaunchTemplate(data, a.Region, instanceCount, int64(0), onDemandPercentageAboveBaseCount)
 	} else if len(mixedInstanceLaunchTemplateRef) > 0 {
 		data := mixedInstanceLaunchTemplateRef[0]
-		a.LaunchTemplate = newMixedInstancesLaunchTemplate(data, u, a.Region, instanceCount, d.Get("mixed_instances_policy.0"))
+		a.LaunchTemplate = newMixedInstancesLaunchTemplate(data, a.Region, instanceCount, d.Get("mixed_instances_policy.0"))
 	}
 
-	a.PopulateUsage(u)
-
-	return a.BuildResource()
+	return a
 }
 
-func newLaunchConfiguration(d *schema.ResourceData, u *schema.UsageData, region string, instanceCount int64) *aws.LaunchConfiguration {
+func newLaunchConfiguration(d *schema.ResourceData, region string, instanceCount int64) *aws.LaunchConfiguration {
 	purchaseOption := "on_demand"
 	if d.Get("spot_price").String() != "" {
 		purchaseOption = "spot"
@@ -82,7 +93,7 @@ func newLaunchConfiguration(d *schema.ResourceData, u *schema.UsageData, region 
 		PurchaseOption:   purchaseOption,
 		InstanceType:     d.Get("instance_type").String(),
 		EBSOptimized:     d.Get("ebs_optimized").Bool(),
-		EnableMonitoring: d.Get("enable_monitoring").Bool(),
+		EnableMonitoring: d.GetBoolOrDefault("enable_monitoring", true),
 		CPUCredits:       d.Get("credit_specification.0.cpu_credits").String(),
 	}
 
@@ -115,7 +126,7 @@ func newLaunchConfiguration(d *schema.ResourceData, u *schema.UsageData, region 
 	return a
 }
 
-func newLaunchTemplate(d *schema.ResourceData, u *schema.UsageData, region string, instanceCount, onDemandBaseCount, onDemandPercentageAboveBaseCount int64) *aws.LaunchTemplate {
+func newLaunchTemplate(d *schema.ResourceData, region string, instanceCount, onDemandBaseCount, onDemandPercentageAboveBaseCount int64) *aws.LaunchTemplate {
 	a := &aws.LaunchTemplate{
 		Address:                          d.Address,
 		Region:                           region,
@@ -152,7 +163,7 @@ func newLaunchTemplate(d *schema.ResourceData, u *schema.UsageData, region strin
 	return a
 }
 
-func newMixedInstancesLaunchTemplate(d *schema.ResourceData, u *schema.UsageData, region string, capacity int64, mixedInstancePolicyData gjson.Result) *aws.LaunchTemplate {
+func newMixedInstancesLaunchTemplate(d *schema.ResourceData, region string, capacity int64, mixedInstancePolicyData gjson.Result) *aws.LaunchTemplate {
 	overrideInstanceType, instanceCount := getInstanceTypeAndCount(mixedInstancePolicyData, capacity)
 	if overrideInstanceType != "" {
 		d.Set("instance_type", overrideInstanceType)
@@ -169,7 +180,7 @@ func newMixedInstancesLaunchTemplate(d *schema.ResourceData, u *schema.UsageData
 		onDemandPercentageAboveBaseCount = instanceDistribution.Get("on_demand_percentage_above_base_capacity").Int()
 	}
 
-	return newLaunchTemplate(d, u, region, instanceCount, onDemandBaseCount, onDemandPercentageAboveBaseCount)
+	return newLaunchTemplate(d, region, instanceCount, onDemandBaseCount, onDemandPercentageAboveBaseCount)
 }
 
 func getInstanceTypeAndCount(mixedInstancePolicyData gjson.Result, capacity int64) (string, int64) {

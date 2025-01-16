@@ -1,21 +1,27 @@
 package config
 
 import (
-	"io/ioutil"
 	"os"
 	"path"
 	"strings"
 
 	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v2"
+
+	"github.com/infracost/infracost/internal/logging"
 )
 
 var configurationVersion = "0.1"
 
 type Configuration struct {
-	Version  string `yaml:"version"`
-	Currency string `yaml:"currency,omitempty"`
+	Version               string `yaml:"version"`
+	Currency              string `yaml:"currency,omitempty"`
+	EnableDashboard       *bool  `yaml:"enable_dashboard,omitempty"`
+	DisableHCLParsing     *bool  `yaml:"disable_hcl_parsing,omitempty"`
+	TLSInsecureSkipVerify *bool  `yaml:"tls_insecure_skip_verify,omitempty"`
+	TLSCACertFile         string `yaml:"tls_ca_cert_file,omitempty"`
+	EnableCloud           *bool  `yaml:"enable_cloud"`
+	EnableCloudUpload     *bool  `yaml:"enable_cloud_upload"`
 }
 
 func loadConfiguration(cfg *Config) error {
@@ -23,8 +29,7 @@ func loadConfiguration(cfg *Config) error {
 
 	err = cfg.migrateConfiguration()
 	if err != nil {
-		logrus.Debug("Error migrating configuration")
-		logrus.Debug(err)
+		logging.Logger.Debug().Err(err).Msg("error migrating configuration")
 	}
 
 	cfg.Configuration, err = readConfigurationFileIfExists()
@@ -37,6 +42,30 @@ func loadConfiguration(cfg *Config) error {
 	}
 	if cfg.Currency == "" {
 		cfg.Currency = "USD"
+	}
+
+	if cfg.Configuration.EnableDashboard != nil {
+		cfg.EnableDashboard = *cfg.Configuration.EnableDashboard
+	}
+
+	if cfg.Configuration.EnableCloud != nil {
+		cfg.EnableCloud = cfg.Configuration.EnableCloud
+	}
+
+	if cfg.Configuration.EnableCloudUpload != nil {
+		cfg.EnableCloudUpload = cfg.Configuration.EnableCloudUpload
+	}
+
+	if cfg.Configuration.DisableHCLParsing != nil {
+		cfg.DisableHCLParsing = *cfg.Configuration.DisableHCLParsing
+	}
+
+	if cfg.Configuration.TLSInsecureSkipVerify != nil {
+		cfg.TLSInsecureSkipVerify = cfg.Configuration.TLSInsecureSkipVerify
+	}
+
+	if cfg.TLSCACertFile == "" {
+		cfg.TLSCACertFile = cfg.Configuration.TLSCACertFile
 	}
 
 	return nil
@@ -54,7 +83,7 @@ func readConfigurationFileIfExists() (Configuration, error) {
 		return Configuration{}, nil
 	}
 
-	data, err := ioutil.ReadFile(ConfigurationFilePath())
+	data, err := os.ReadFile(ConfigurationFilePath())
 	if err != nil {
 		return Configuration{}, err
 	}
@@ -77,7 +106,7 @@ func writeConfigurationFile(c Configuration) error {
 		return err
 	}
 
-	return ioutil.WriteFile(ConfigurationFilePath(), data, 0600)
+	return os.WriteFile(ConfigurationFilePath(), data, 0600)
 }
 
 func ConfigurationFilePath() string {
